@@ -1,0 +1,147 @@
+{
+  "actions": [],
+  "autoname": "hash",
+  "creation": "2026-10-06 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "titulo",
+    "tipo",
+    "estado",
+    "fecha",
+    "column_break_rep1",
+    "usuario",
+    "aseguradora",
+    "conversacion",
+    "alcance",
+    "datos_section",
+    "spec_json",
+    "snapshot_json",
+    "column_break_rep2",
+    "grafico_json",
+    "cobertura_json",
+    "universo"
+  ],
+  "fields": [
+    {
+      "fieldname": "titulo",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Título",
+      "reqd": 1
+    },
+    {
+      "fieldname": "tipo",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "label": "Tipo",
+      "options": "Tabla\nGráfico"
+    },
+    {
+      "default": "Activo",
+      "fieldname": "estado",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "label": "Estado",
+      "options": "Activo\nEliminado"
+    },
+    {
+      "fieldname": "fecha",
+      "fieldtype": "Datetime",
+      "in_list_view": 1,
+      "label": "Fecha"
+    },
+    {
+      "fieldname": "column_break_rep1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "usuario",
+      "fieldtype": "Link",
+      "label": "Usuario",
+      "options": "User",
+      "reqd": 1
+    },
+    {
+      "fieldname": "aseguradora",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "label": "Aseguradora",
+      "options": "Aseguradora"
+    },
+    {
+      "fieldname": "alcance",
+      "fieldtype": "Data",
+      "label": "Alcance (TODAS o aseguradora)"
+    },
+    {
+      "fieldname": "conversacion",
+      "fieldtype": "Link",
+      "label": "Conversación origen",
+      "options": "IA Conversacion"
+    },
+    {
+      "fieldname": "datos_section",
+      "fieldtype": "Section Break",
+      "label": "Datos guardados"
+    },
+    {
+      "fieldname": "spec_json",
+      "fieldtype": "Code",
+      "label": "Query Spec (para re-ejecutar)"
+    },
+    {
+      "fieldname": "snapshot_json",
+      "fieldtype": "Code",
+      "label": "Snapshot de datos (histórico)"
+    },
+    {
+      "fieldname": "column_break_rep2",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "grafico_json",
+      "fieldtype": "Code",
+      "label": "Config de gráfico (Frappe Charts)"
+    },
+    {
+      "fieldname": "cobertura_json",
+      "fieldtype": "Code",
+      "label": "Cobertura / universo (JSON)"
+    },
+    {
+      "default": "0",
+      "fieldname": "universo",
+      "fieldtype": "Int",
+      "label": "Universo (registros en alcance)"
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "links": [],
+  "modified": "2026-10-06 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Molduplastic IA",
+  "name": "IA Reporte",
+  "naming_rule": "Random",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "fecha",
+  "sort_order": "DESC",
+  "title_field": "titulo"
+}

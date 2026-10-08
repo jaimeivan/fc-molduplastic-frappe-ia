@@ -1,0 +1,48 @@
+{
+ "charts": [],
+ "content": "[{\"id\": \"iaHeader01\", \"type\": \"header\", \"data\": {\"text\": \"<span style=\\\"font-size: 18px;\\\"><b>Asistente IA</b></span>\", \"col\": 12}}, {\"id\": \"iaShort01\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Asistente IA\", \"col\": 3}}]",
+ "creation": "2026-10-06 10:03:38.540383",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "hide_custom": 0,
+ "icon": "sparkles",
+ "idx": 0,
+ "indicator_color": "green",
+ "is_hidden": 0,
+ "label": "Molduplastic IA",
+ "links": [],
+ "modified": "2026-10-06 10:56:25.727420",
+ "modified_by": "Administrator",
+ "module": "Molduplastic IA",
+ "name": "Molduplastic IA",
+ "number_cards": [],
+ "owner": "Administrator",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [
+  {
+   "role": "Molduplastic IA User"
+  },
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Molduplastic-Admin"
+  },
+  {
+   "role": "Molduplastic-Admin-ReadOnly"
+  }
+ ],
+ "sequence_id": 0.0,
+ "shortcuts": [
+  {
+   "doc_view": "",
+   "icon": "message-circle",
+   "label": "Asistente IA",
+   "link_to": "asistente-ia",
+   "type": "Page"
+  }
+ ],
+ "title": "Molduplastic IA"
+}

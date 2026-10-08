@@ -1,0 +1,109 @@
+{
+  "actions": [],
+  "creation": "2026-10-06 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "proveedores_section",
+    "proveedor_defecto",
+    "column_break_ia0",
+    "timeout_llm",
+    "proveedores",
+    "opencode_section",
+    "opencode_zen_api_key",
+    "limites_section",
+    "max_limit",
+    "column_break_ia3",
+    "max_llamadas_por_minuto",
+    "max_tokens_respuesta"
+  ],
+  "fields": [
+    {
+      "fieldname": "proveedores_section",
+      "fieldtype": "Section Break",
+      "label": "Proveedores LLM (rutas eco/pro + fallback por orden)"
+    },
+    {
+      "default": "Automático",
+      "fieldname": "proveedor_defecto",
+      "fieldtype": "Select",
+      "label": "Ruta por defecto",
+      "options": "Automático\nEconómico\nProfundo"
+    },
+    {
+      "fieldname": "column_break_ia0",
+      "fieldtype": "Column Break"
+    },
+    {
+      "default": "120",
+      "fieldname": "timeout_llm",
+      "fieldtype": "Int",
+      "label": "Timeout LLM (segundos)"
+    },
+    {
+      "fieldname": "proveedores",
+      "fieldtype": "Table",
+      "label": "Proveedores",
+      "options": "IA Proveedor"
+    },
+    {
+      "fieldname": "opencode_section",
+      "fieldtype": "Section Break",
+      "label": "Opencode Zen (https://opencode.ai/zen)"
+    },
+    {
+      "fieldname": "opencode_zen_api_key",
+      "fieldtype": "Password",
+      "label": "Console API Key (para modo Opencode Zen)"
+    },
+    {
+      "fieldname": "limites_section",
+      "fieldtype": "Section Break",
+      "label": "Límites operativos"
+    },
+    {
+      "default": "500",
+      "fieldname": "max_limit",
+      "fieldtype": "Int",
+      "label": "Límite máximo de filas por consulta"
+    },
+    {
+      "fieldname": "column_break_ia3",
+      "fieldtype": "Column Break"
+    },
+    {
+      "default": "20",
+      "fieldname": "max_llamadas_por_minuto",
+      "fieldtype": "Int",
+      "label": "Máx. preguntas por minuto y usuario"
+    },
+    {
+      "default": "2000",
+      "fieldname": "max_tokens_respuesta",
+      "fieldtype": "Int",
+      "label": "Máx. tokens de respuesta (solo HTTP)"
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "issingle": 1,
+  "links": [],
+  "modified": "2026-10-06 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Molduplastic IA",
+  "name": "Molduplastic IA Settings",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ]
+}

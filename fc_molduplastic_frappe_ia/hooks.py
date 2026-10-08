@@ -115,15 +115,12 @@ app_license = "mit"
 
 # Permissions
 # -----------
-# Permissions evaluated in scripted ways
-
-# permission_query_conditions = {
-# 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
-# }
-#
-# has_permission = {
-# 	"Event": "frappe.desk.doctype.event.event.has_permission",
-# }
+# Lectura de documento único (las query conditions solo filtran listados).
+has_permission = {
+	"Pieza": "fc_molduplastic_frappe_ia.molduplastic_ia.permissions.has_permission_pieza",
+	"Recoleccion": "fc_molduplastic_frappe_ia.molduplastic_ia.permissions.has_permission_recoleccion",
+	"Taller": "fc_molduplastic_frappe_ia.molduplastic_ia.permissions.has_permission_taller",
+}
 
 # DocType Class
 # ---------------
@@ -144,6 +141,19 @@ app_license = "mit"
 # 		"on_trash": "method"
 # 	}
 # }
+
+# Aislamiento por tenant (Aseguradora): el executor de IA y el Desk filtran
+# por las mismas condiciones. Fuente de verdad: User Permissions.
+permission_query_conditions = {
+	"Pieza": "fc_molduplastic_frappe_ia.molduplastic_ia.permissions.condicion_pieza",
+	"Recoleccion": "fc_molduplastic_frappe_ia.molduplastic_ia.permissions.condicion_recoleccion",
+	"Taller": "fc_molduplastic_frappe_ia.molduplastic_ia.permissions.condicion_taller",
+	"IA Conversacion": "fc_molduplastic_frappe_ia.molduplastic_ia.permissions.condicion_conversacion",
+	"IA Reporte": "fc_molduplastic_frappe_ia.molduplastic_ia.permissions.condicion_reporte",
+}
+
+# (Sin doc_events: el tenant de Taller se deriva en vivo desde Pieza,
+# no hay tabla de mapeo que mantener.)
 
 # Scheduled Tasks
 # ---------------

@@ -1,0 +1,198 @@
+{
+  "actions": [],
+  "autoname": "hash",
+  "creation": "2026-10-06 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "fecha_hora",
+    "estado",
+    "consulta_id",
+    "column_break_log1",
+    "usuario",
+    "aseguradora",
+    "contexto_section",
+    "proveedor",
+    "modelo",
+    "column_break_log2",
+    "operacion",
+    "es_fallback",
+    "motivo_fallback",
+    "contenido_section",
+    "prompt",
+    "column_break_log3",
+    "respuesta",
+    "metricas_section",
+    "tokens_entrada",
+    "tokens_salida",
+    "latencia_ms",
+    "column_break_log4",
+    "costo_estimado_usd",
+    "error"
+  ],
+  "fields": [
+    {
+      "default": "Now",
+      "fieldname": "fecha_hora",
+      "fieldtype": "Datetime",
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "label": "Fecha y hora",
+      "reqd": 1
+    },
+    {
+      "fieldname": "estado",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "label": "Estado",
+      "options": "Éxito\nFallo\nSpec rechazada\nFuera de alcance",
+      "reqd": 1
+    },
+    {
+      "fieldname": "consulta_id",
+      "fieldtype": "Data",
+      "label": "ID de consulta (agrupa llamadas)"
+    },
+    {
+      "fieldname": "column_break_log1",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "usuario",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "label": "Usuario",
+      "options": "User"
+    },
+    {
+      "fieldname": "aseguradora",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "label": "Aseguradora",
+      "options": "Aseguradora"
+    },
+    {
+      "fieldname": "contexto_section",
+      "fieldtype": "Section Break",
+      "label": "Proveedor"
+    },
+    {
+      "fieldname": "proveedor",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "label": "Proveedor"
+    },
+    {
+      "fieldname": "modelo",
+      "fieldtype": "Data",
+      "label": "Modelo"
+    },
+    {
+      "fieldname": "column_break_log2",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "operacion",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Operación",
+      "options": "generate_spec\nexplain"
+    },
+    {
+      "default": "0",
+      "fieldname": "es_fallback",
+      "fieldtype": "Check",
+      "label": "Fue fallback"
+    },
+    {
+      "fieldname": "motivo_fallback",
+      "fieldtype": "Small Text",
+      "label": "Motivo del fallback"
+    },
+    {
+      "fieldname": "contenido_section",
+      "fieldtype": "Section Break",
+      "label": "Contenido completo"
+    },
+    {
+      "fieldname": "prompt",
+      "fieldtype": "Code",
+      "label": "Prompt enviado (completo)"
+    },
+    {
+      "fieldname": "column_break_log3",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "respuesta",
+      "fieldtype": "Code",
+      "label": "Respuesta recibida (completa)"
+    },
+    {
+      "fieldname": "metricas_section",
+      "fieldtype": "Section Break",
+      "label": "Métricas"
+    },
+    {
+      "default": "0",
+      "fieldname": "tokens_entrada",
+      "fieldtype": "Int",
+      "label": "Tokens entrada"
+    },
+    {
+      "default": "0",
+      "fieldname": "tokens_salida",
+      "fieldtype": "Int",
+      "label": "Tokens salida"
+    },
+    {
+      "default": "0",
+      "fieldname": "latencia_ms",
+      "fieldtype": "Int",
+      "label": "Latencia (ms)"
+    },
+    {
+      "fieldname": "column_break_log4",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "costo_estimado_usd",
+      "fieldtype": "Float",
+      "label": "Costo estimado (USD)",
+      "precision": "6"
+    },
+    {
+      "fieldname": "error",
+      "fieldtype": "Long Text",
+      "label": "Error"
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "links": [],
+  "modified": "2026-10-06 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Molduplastic IA",
+  "name": "IA API Log",
+  "naming_rule": "Random",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "fecha_hora",
+  "sort_order": "DESC"
+}

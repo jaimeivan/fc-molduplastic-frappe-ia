@@ -4,3 +4,6 @@
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
+fc_molduplastic_frappe_ia.molduplastic_ia.patches.crear_rol_y_permisos_ia
+fc_molduplastic_frappe_ia.molduplastic_ia.patches.crear_workspace_ia
+fc_molduplastic_frappe_ia.molduplastic_ia.patches.semilla_proveedores_ia
