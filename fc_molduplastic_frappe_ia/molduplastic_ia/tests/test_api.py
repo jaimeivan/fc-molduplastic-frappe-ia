@@ -191,3 +191,74 @@ class TestBorradoLogico(FrappeTestCase):
 		)["reporte"]
 		frappe.set_user(USUARIO_GNP)
 		return nombre
+
+
+class TestHistorialParaLLM(FrappeTestCase):
+	"""El contexto son los últimos turnos, comprimidos; nunca specs ni datos."""
+
+	def _conversacion(self, turnos, usuario="Administrator"):
+		doc = frappe.get_doc(
+			{
+				"doctype": "IA Conversacion",
+				"titulo": "contexto",
+				"usuario": usuario,
+				"universo": "1",
+				"estado": "Abierta",
+			}
+		)
+		for pregunta, respuesta in turnos:
+			doc.append("mensajes", {"rol": "usuario", "contenido": pregunta})
+			doc.append("mensajes", {"rol": "asistente", "contenido": respuesta})
+		doc.insert(ignore_permissions=True)
+		return doc
+
+	def test_sin_conversacion_no_hay_historial(self):
+		self.assertEqual(api._historial_para_llm(None, "Administrator"), [])
+		self.assertEqual(api._historial_para_llm("no-existe", "Administrator"), [])
+
+	def test_devuelve_pares_pregunta_respuesta(self):
+		doc = self._conversacion([("dame el resumen", "40 piezas ingresadas")])
+		historial = api._historial_para_llm(doc.name, "Administrator")
+		self.assertEqual(len(historial), 1)
+		self.assertEqual(historial[0]["pregunta"], "dame el resumen")
+		self.assertIn("40 piezas", historial[0]["respuesta"])
+
+	def test_toma_solo_los_ultimos_tres_turnos(self):
+		doc = self._conversacion([(f"pregunta {i}", f"respuesta {i}") for i in range(5)])
+		historial = api._historial_para_llm(doc.name, "Administrator")
+		self.assertEqual(len(historial), api.MAX_TURNOS_CONTEXTO)
+		self.assertEqual(historial[-1]["pregunta"], "pregunta 4")
+		self.assertEqual(historial[0]["pregunta"], "pregunta 2")
+
+	def test_trunca_textos_largos(self):
+		doc = self._conversacion([("p" * 900, "r" * 900)])
+		historial = api._historial_para_llm(doc.name, "Administrator")
+		self.assertEqual(len(historial[0]["pregunta"]), api.MAX_CHARS_CONTEXTO)
+		self.assertEqual(len(historial[0]["respuesta"]), api.MAX_CHARS_CONTEXTO)
+
+	def test_otro_usuario_no_recibe_el_historial(self):
+		doc = self._conversacion([("dame el resumen", "40 piezas")])
+		self.assertEqual(api._historial_para_llm(doc.name, USUARIO_GNP), [])
+
+	def test_conversacion_eliminada_no_aporta_contexto(self):
+		doc = self._conversacion([("dame el resumen", "40 piezas")])
+		frappe.db.set_value("IA Conversacion", doc.name, "estado", "Eliminada")
+		self.assertEqual(api._historial_para_llm(doc.name, "Administrator"), [])
+
+
+class TestSugerencias(FrappeTestCase):
+	"""El chat pide las sugerencias al abrirse: solo activas y en orden."""
+
+	def test_solo_activas_con_texto_y_en_orden(self):
+		from types import SimpleNamespace
+
+		doc = {
+			"sugerencias": [
+				SimpleNamespace(sugerencia="Segunda", activo=1, orden=2),
+				SimpleNamespace(sugerencia="Primera", activo=1, orden=1),
+				SimpleNamespace(sugerencia="Apagada", activo=0, orden=0),
+				SimpleNamespace(sugerencia="   ", activo=1, orden=3),
+			]
+		}
+		with patch.object(api.frappe, "get_cached_doc", return_value=doc):
+			self.assertEqual(api.sugerencias(), ["Primera", "Segunda"])

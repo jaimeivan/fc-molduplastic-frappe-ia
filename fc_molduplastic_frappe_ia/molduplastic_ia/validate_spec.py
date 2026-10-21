@@ -13,14 +13,20 @@ from fc_molduplastic_frappe_ia.molduplastic_ia.whitelist import (
 	get_whitelist,
 )
 
-OPERADORES_PERMITIDOS = {"=", "!=", ">", "<", ">=", "<=", "like", "in", "between", "is"}
-FUNCIONES_AGREGACION = {"count", "sum", "avg", "min", "max"}
+OPERADORES_PERMITIDOS = {
+	"=", "!=", ">", "<", ">=", "<=", "like", "in", "between", "is", "mes_distinto", "mes_igual",
+}
+OPERADORES_COMPARACION = {"=", "!=", ">", "<", ">=", "<="}
+FUNCIONES_AGREGACION = {"count", "count_distinct", "sum", "avg", "min", "max"}
+# count_distinct no acepta '*': COUNT(DISTINCT *) no tiene sentido en SQL.
+FUNCIONES_SIN_STAR = {"count_distinct"}
 TIPOS_GRAFICO = {"bar", "line", "pie"}
 ALIAS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,30}$")
 MAX_FIELDS = 20
-MAX_AGGS = 3
+MAX_AGGS = 8
 MAX_GROUP_BY = 3
 MAX_VALORES_IN = 100
+MAX_COND_POR_CAMPO = 3
 
 
 class SpecInvalida(frappe.ValidationError):
@@ -37,6 +43,8 @@ def validar_spec(spec):
 		raise SpecInvalida("El spec debe ser un objeto JSON.")
 	if spec.get("out_of_scope"):
 		raise SpecInvalida("Pregunta fuera de alcance.")
+	if "respuesta_directa" in spec:
+		return _validar_respuesta_directa(spec)
 	if set(spec) - {
 		"doctype",
 		"fields",
@@ -45,6 +53,7 @@ def validar_spec(spec):
 		"group_by",
 		"order_by",
 		"limit",
+		"min_ingresadas",
 		"render_chart",
 		"out_of_scope",
 	}:
@@ -71,14 +80,15 @@ def validar_spec(spec):
 	for campo, cond in filters.items():
 		if campo not in campos_ok:
 			raise SpecInvalida(f"Filtro sobre campo no permitido: {campo}")
-		filters_norm[campo] = _validar_condicion(campo, cond)
+		filters_norm[campo] = _validar_condicion(campo, cond, campos_ok)
 
 	aggs = spec.get("aggregations") or []
 	if not isinstance(aggs, list) or len(aggs) > MAX_AGGS:
-		raise SpecInvalida("aggregations debe ser una lista de máximo 3.")
+		raise SpecInvalida(f"aggregations debe ser una lista de máximo {MAX_AGGS}.")
 	aliases = set()
+	aggs_norm = []
 	for agg in aggs:
-		if not isinstance(agg, dict) or set(agg) - {"func", "field", "alias"}:
+		if not isinstance(agg, dict) or set(agg) - {"func", "field", "alias", "filtros"}:
 			raise SpecInvalida("Cada agregación necesita func, field y alias.")
 		func, campo, alias = agg.get("func"), agg.get("field"), agg.get("alias")
 		if func not in FUNCIONES_AGREGACION:
@@ -87,7 +97,9 @@ def validar_spec(spec):
 			raise SpecInvalida(f"Agregación sobre campo no permitido: {campo}")
 		if campo == "*" and func != "count":
 			raise SpecInvalida("Solo count admite '*'.")
-		if func != "count":
+		if campo == "*" and func in FUNCIONES_SIN_STAR:
+			raise SpecInvalida(f"{func} necesita un campo concreto, no '*'.")
+		if func not in ("count", "count_distinct"):
 			ft = info["fields"][campo]["fieldtype"]
 			if ft not in FIELDTYPES_NUMERICOS:
 				raise SpecInvalida(f"{func} requiere campo numérico, no {campo} ({ft}).")
@@ -96,6 +108,7 @@ def validar_spec(spec):
 		if alias in aliases or alias in campos_ok:
 			raise SpecInvalida(f"Alias duplicado o en conflicto: {alias}")
 		aliases.add(alias)
+		aggs_norm.append(_normalizar_agg(agg, campos_ok, info))
 
 	group_by = spec.get("group_by") or []
 	if not isinstance(group_by, list) or len(group_by) > MAX_GROUP_BY:
@@ -130,6 +143,16 @@ def validar_spec(spec):
 	if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= max_limit:
 		raise SpecInvalida(f"limit debe ser entero entre 1 y {max_limit}.")
 
+	min_ingresadas = spec.get("min_ingresadas")
+	if min_ingresadas is not None:
+		# Es un HAVING sobre el conteo de ingresadas, no un WHERE sobre la pieza:
+		# el executor no lo usa y `explain` filtra las filas ya agregadas.
+		if not isinstance(min_ingresadas, int) or isinstance(min_ingresadas, bool) or min_ingresadas < 1:
+			raise SpecInvalida("min_ingresadas debe ser un entero mayor o igual a 1.")
+		alias_aggs = {str(a["alias"]).lower() for a in aggs_norm}
+		if "recolectadas" not in alias_aggs or not group_by:
+			raise SpecInvalida("min_ingresadas solo aplica a efectividad por dimensión.")
+
 	chart = spec.get("render_chart")
 	if chart is not None:
 		if not isinstance(chart, dict) or set(chart) - {"type", "x", "y", "title"}:
@@ -144,22 +167,83 @@ def validar_spec(spec):
 		"doctype": doctype,
 		"fields": fields,
 		"filters": filters_norm,
-		"aggregations": aggs,
+		"aggregations": aggs_norm,
 		"group_by": group_by,
 		"order_by": [{"field": o["field"], "dir": o["dir"].lower()} for o in order_by],
 		"limit": limit,
+		"min_ingresadas": min_ingresadas,
 		"render_chart": chart,
 		"out_of_scope": False,
 	}
 
 
-def _validar_condicion(campo, cond):
+def _normalizar_agg(agg, campos_ok, info):
+	"""Normaliza una agregación, incluido su filtro anidado opcional.
+
+	El filtro de la agregación es un `filters` más, con las mismas reglas y el
+	mismo recorrido por `_validar_condicion`. Solo existe para el caso de dos
+	medidas sobre poblaciones distintas ("monto recolectado" vs "monto
+	pendiente"), que un único WHERE no puede expresar: sin él el modelo tiene
+	que elegir una de las dos y se inventa la otra.
+	"""
+	out = {"func": agg["func"], "field": agg["field"], "alias": agg["alias"], "filtros": {}}
+	filtros = agg.get("filtros") or {}
+	if not isinstance(filtros, dict):
+		raise SpecInvalida("El filtro de una agregación debe ser un objeto.")
+	for campo, cond in filtros.items():
+		if campo not in campos_ok:
+			raise SpecInvalida(f"Filtro de agregación sobre campo no permitido: {campo}")
+		if cond is None and agg["func"] == "count":
+			raise SpecInvalida("Usa ['is', 'not null'] en vez de null para contar con dato.")
+		out["filtros"][campo] = _validar_condicion(campo, cond, campos_ok)
+	return out
+
+
+def _es_referencia(v):
+	"""True si es una referencia a otro campo: {"campo": "fechaingreso"}."""
+	return isinstance(v, dict) and set(v) == {"campo"} and isinstance(v.get("campo"), str)
+
+
+def _validar_referencia(campo, v, campos_ok):
+	otro = v["campo"]
+	if otro not in campos_ok:
+		raise SpecInvalida(f"Referencia a campo no permitido en {campo}: {otro}")
+	if otro == campo:
+		raise SpecInvalida(f"Comparación de {campo} consigo mismo.")
+
+
+def _validar_condicion(campo, cond, campos_ok):
+	"""Valida una condición y devuelve su forma canónica.
+
+	Una condición es un valor escalar o [op, ...]. Varias condiciones sobre el
+	mismo campo se escriben como lista de condiciones (se unen con AND):
+	[["between", desde, hasta], [">", {"campo": "fechaingreso"}]].
+	"""
+	if isinstance(cond, (str, int, float, bool)) or cond is None:
+		return cond
+	if not isinstance(cond, list) or not cond:
+		raise SpecInvalida(f"Condición inválida en {campo}.")
+	if isinstance(cond[0], list):
+		if len(cond) > MAX_COND_POR_CAMPO:
+			raise SpecInvalida(f"Máximo {MAX_COND_POR_CAMPO} condiciones en {campo}.")
+		return [_validar_condicion_simple(campo, c, campos_ok) for c in cond]
+	return _validar_condicion_simple(campo, cond, campos_ok)
+
+
+def _validar_condicion_simple(campo, cond, campos_ok):
 	"""Valida una condición y devuelve su forma canónica.
 
 	Formas canónicas: valor escalar (=), [op, valor], [op, v1, v2] para between
 	y [op, [v...]] para in. También se acepta ["between", [v1, v2]] (límites
 	anidados), que es como los modelos escriben el rango con frecuencia; se
 	aplana acá para que el executor y el spec guardado solo vean la canónica.
+
+	Comparación entre campos: el valor puede ser {"campo": "otro_campo"} solo
+	con operadores de comparación (=, !=, >, <, >=, <=). Y ["mes_distinto",
+	{"campo": "otro"}] / ["mes_igual", {"campo": "otro"}] comparan YYYY-MM de
+	ambos (rezagadas y recolectadas en su mes de ingreso). En todos estos casos
+	el campo referido debe estar en la whitelist; nunca viaja como parámetro
+	sino como identificador.
 	"""
 	if isinstance(cond, (str, int, float, bool)) or cond is None:
 		return cond
@@ -168,6 +252,14 @@ def _validar_condicion(campo, cond):
 	op = cond[0]
 	if op not in OPERADORES_PERMITIDOS:
 		raise SpecInvalida(f"Operador no permitido en {campo}: {op}")
+	if op in ("mes_distinto", "mes_igual"):
+		if len(cond) != 2 or not _es_referencia(cond[1]):
+			raise SpecInvalida(f"{op} necesita {{\"campo\": ...}} en {campo}.")
+		_validar_referencia(campo, cond[1], campos_ok)
+		return [op, {"campo": cond[1]["campo"]}]
+	if op in OPERADORES_COMPARACION and len(cond) == 2 and _es_referencia(cond[1]):
+		_validar_referencia(campo, cond[1], campos_ok)
+		return [op, {"campo": cond[1]["campo"]}]
 	if op == "between":
 		if len(cond) == 2 and isinstance(cond[1], list):
 			cond = [op, *cond[1]]
@@ -192,6 +284,23 @@ def _validar_condicion(campo, cond):
 	for v in cond[1:]:
 		_validar_valor(campo, v)
 	return list(cond)
+
+
+def _validar_respuesta_directa(spec):
+	"""Spec que ya trae la respuesta y no toca la base de datos.
+
+	Existe para las preguntas que el prompt puede contestar con lo que ya está
+	sabido (el mapa región -> estados). No es un atajo para inventar cifras: el
+	texto va directo al chat y nunca se compara contra datos, así que el
+	ejecutor no interviene. Se exige que venga sola, sin filtros ni
+	agregaciones, para que no sirva de consulta con respuesta inventada.
+	"""
+	if set(spec) - {"respuesta_directa"}:
+		raise SpecInvalida("respuesta_directa no admite otros campos.")
+	texto = spec.get("respuesta_directa")
+	if not isinstance(texto, str) or not texto.strip():
+		raise SpecInvalida("respuesta_directa debe ser texto no vacío.")
+	return {"respuesta_directa": texto.strip()}
 
 
 def _validar_valor(campo, v):

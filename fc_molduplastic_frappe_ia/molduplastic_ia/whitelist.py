@@ -9,6 +9,18 @@ import frappe
 # DocTypes que el LLM puede ver y consultar. Cualquier otro se rechaza.
 DOCTYPES_PERMITIDOS = ("Pieza", "Recoleccion", "Taller")
 
+# Columnas derivadas que el LLM puede agrupar como si fueran campos. La
+# expresión SQL la construye el código (ver regiones.py), nunca el LLM.
+VIRTUALES = {
+	"Pieza": {
+		"region_pais": {
+			"label": "Región del país",
+			"fieldtype": "Virtual",
+			"origen": "estadolocalidad",
+		}
+	}
+}
+
 # Fieldtypes que nunca salen al LLM ni entran en specs (adjuntos, tablas, HTML...).
 FIELDTYPES_PROHIBIDOS = {
 	"Attach",
@@ -27,7 +39,7 @@ FIELDTYPES_PROHIBIDOS = {
 # Fieldtypes numéricos aptos para agregaciones sum/avg/min/max.
 FIELDTYPES_NUMERICOS = {"Int", "Float", "Currency", "Percent"}
 
-CACHE_KEY = "molduplastic_ia:whitelist"
+CACHE_KEY = "molduplastic_ia:whitelist:v2"
 CACHE_TTL = 24 * 60 * 60
 
 
@@ -59,6 +71,8 @@ def _construir_whitelist():
 			fields[df.fieldname] = {"label": df.label or df.fieldname, "fieldtype": df.fieldtype}
 			if df.fieldtype == "Link" and df.options:
 				links[df.fieldname] = df.options
+		for campo, meta in VIRTUALES.get(doctype, {}).items():
+			fields[campo] = dict(meta, virtual=True)
 		whitelist[doctype] = {"fields": fields, "links": links}
 	return whitelist
 

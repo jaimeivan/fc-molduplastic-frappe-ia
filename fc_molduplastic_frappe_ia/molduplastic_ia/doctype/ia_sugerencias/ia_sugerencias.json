@@ -1,0 +1,44 @@
+{
+  "actions": [],
+  "creation": "2026-10-21 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "sugerencia",
+    "activo",
+    "orden"
+  ],
+  "fields": [
+    {
+      "fieldname": "sugerencia",
+      "fieldtype": "Small Text",
+      "in_list_view": 1,
+      "label": "Sugerencia",
+      "reqd": 1
+    },
+    {
+      "default": "1",
+      "fieldname": "activo",
+      "fieldtype": "Check",
+      "in_list_view": 1,
+      "label": "Activa"
+    },
+    {
+      "default": "0",
+      "fieldname": "orden",
+      "fieldtype": "Int",
+      "in_list_view": 1,
+      "label": "Orden"
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "istable": 1,
+  "links": [],
+  "modified": "2026-10-21 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Molduplastic IA",
+  "name": "IA Sugerencias",
+  "owner": "Administrator",
+  "permissions": []
+}

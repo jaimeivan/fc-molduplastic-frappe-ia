@@ -104,6 +104,37 @@ def _get_conversacion(nombre, user, aseguradora="", universo=""):
 	return doc, True
 
 
+MAX_TURNOS_CONTEXTO = 3
+MAX_CHARS_CONTEXTO = 400
+
+
+def _historial_para_llm(conversacion, user):
+	"""Últimos turnos de la conversación, comprimidos para el prompt.
+
+	No se mandan specs ni datos: cada pregunta se compila de nuevo y las cifras
+	salen siempre de la consulta nueva. El contexto sirve solo para resolver
+	referencias ("esos mismos", "y por taller?", "y del mes pasado?").
+	"""
+	if not conversacion or not frappe.db.exists("IA Conversacion", conversacion):
+		return []
+	doc = frappe.get_doc("IA Conversacion", conversacion)
+	if doc.usuario != user and "System Manager" not in frappe.get_roles(user):
+		return []
+	if doc.estado == "Eliminada":
+		return []
+	turnos, pregunta = [], None
+	for m in doc.mensajes:
+		texto = (m.contenido or "").strip()
+		if not texto:
+			continue
+		if m.rol == "usuario":
+			pregunta = texto[:MAX_CHARS_CONTEXTO]
+		elif pregunta:
+			turnos.append({"pregunta": pregunta, "respuesta": texto[:MAX_CHARS_CONTEXTO]})
+			pregunta = None
+	return turnos[-MAX_TURNOS_CONTEXTO:]
+
+
 @frappe.whitelist()
 def ask(pregunta, conversacion=None, universo=None):
 	"""Flujo completo: universo -> spec -> validación -> ejecución -> explicación."""
@@ -148,9 +179,10 @@ def ask(pregunta, conversacion=None, universo=None):
 		universo = propias[0]
 		aseguradora_log = propias[0]
 	consulta_id = frappe.generate_hash(length=10)
+	historial = _historial_para_llm(conversacion, user)
 
 	try:
-		spec, info = generate_spec(pregunta.strip())
+		spec, info = generate_spec(pregunta.strip(), historial=historial)
 	except (LLMConfigError, LLMProviderError) as e:
 		_log_llamada({}, "generate_spec", "Fallo", consulta_id, user, aseguradora_log, str(e))
 		return {"ok": False, "mensaje": f"El servicio de IA no está disponible: {e}"}
@@ -169,6 +201,28 @@ def ask(pregunta, conversacion=None, universo=None):
 			"universo_nombre": _nombre_aseguradora(universo),
 		}
 
+	if spec.get("respuesta_directa"):
+		# El prompt ya contesto sin tocar la BD (mapa region -> estados). No hay
+		# resultado ni cobertura que guardar, y el ejecutor no entra.
+		texto = spec["respuesta_directa"]
+		if texto.strip().upper() in ("REGIONES", "TABLA_REGIONES"):
+			# La tabla la arma el servidor desde regiones.ESTADOS. Si la escribiera
+			# el modelo, podría omitir estados o cambiar una región de lugar.
+			from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import tabla_regiones
+
+			texto = tabla_regiones()
+		_log_llamada(info, "generate_spec", "Respuesta directa", consulta_id, user, aseguradora_log)
+		doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
+		_guardar_mensajes(doc, pregunta, texto, spec, None, None, primera=not conversacion)
+		return {
+			"ok": True,
+			"conversacion": doc.name,
+			"universo": universo,
+			"universo_nombre": _nombre_aseguradora(universo),
+			"respuesta": texto,
+			"sin_consulta": True,
+		}
+
 	try:
 		resultado = ejecutar(spec, user, alcance=alcance)
 	except SpecInvalida as e:
@@ -178,7 +232,7 @@ def ask(pregunta, conversacion=None, universo=None):
 		return {"ok": False, "mensaje": str(e)}
 
 	try:
-		explicacion, info_exp = explain(pregunta, spec, resultado)
+		explicacion, info_exp = explain(pregunta, spec, resultado, historial=historial)
 		_log_llamada(info_exp, "explain", "Éxito", consulta_id, user, aseguradora_log)
 	except (LLMConfigError, LLMProviderError) as e:
 		_log_llamada({}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e))
@@ -234,6 +288,20 @@ def universos():
 	if get_user_aseguradoras(frappe.session.user) is not None:
 		frappe.throw("Solo un administrador elige universo.", frappe.PermissionError)
 	return lista_aseguradoras()
+
+
+@frappe.whitelist()
+def sugerencias():
+	"""Preguntas sugeridas del chat (Settings): activas y en orden.
+
+	Se leen del Single con `get_cached_doc`, sin pedir permiso al usuario: el
+	Settings es solo de System Manager y aquí únicamente salen los textos de
+	las sugerencias, que no son datos sensibles.
+	"""
+	s = frappe.get_cached_doc("Molduplastic IA Settings")
+	filas = [x for x in (s.get("sugerencias") or []) if x.activo and (x.sugerencia or "").strip()]
+	filas.sort(key=lambda x: (x.orden or 0, x.sugerencia))
+	return [x.sugerencia.strip() for x in filas]
 
 
 @frappe.whitelist()

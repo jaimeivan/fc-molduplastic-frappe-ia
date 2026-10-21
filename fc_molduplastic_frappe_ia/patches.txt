@@ -7,3 +7,4 @@
 fc_molduplastic_frappe_ia.molduplastic_ia.patches.crear_rol_y_permisos_ia
 fc_molduplastic_frappe_ia.molduplastic_ia.patches.crear_workspace_ia
 fc_molduplastic_frappe_ia.molduplastic_ia.patches.semilla_proveedores_ia
+fc_molduplastic_frappe_ia.molduplastic_ia.patches.sembrar_sugerencias_ia

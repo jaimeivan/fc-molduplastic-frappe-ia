@@ -28,10 +28,18 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			.ia-conv { cursor: pointer; padding: 6px 8px; border-radius: 6px; }
 			.ia-conv:hover, .ia-conv.active { background: var(--bg-light-gray); }
 			.ia-pre { white-space: pre-wrap; }
+			.ia-pre.ia-md { white-space: normal; }
+			.ia-md p { margin: 0 0 6px; }
+			.ia-md table { border-collapse: collapse; margin: 6px 0; font-size: 12px; }
+			.ia-md th, .ia-md td { border: 1px solid var(--border-color); padding: 4px 10px; text-align: left; }
+			.ia-md th { background: var(--bg-light-gray); }
 			.ia-loader span { display: inline-block; width: 7px; height: 7px; margin-right: 4px; border-radius: 50%; background: var(--text-muted); animation: ia-bounce 1.2s infinite; }
 			.ia-loader span:nth-child(2) { animation-delay: 0.15s; }
 			.ia-loader span:nth-child(3) { animation-delay: 0.3s; }
 			@keyframes ia-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-5px); opacity: 1; } }
+			#ia-sugerencias { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+			.ia-chip { cursor: pointer; font-size: 12px; padding: 4px 10px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--card-bg); color: var(--text-color); }
+			.ia-chip:hover { background: var(--bg-light-gray); }
 		</style>
 		<div id="ia-app">
 			<div id="ia-side">
@@ -48,6 +56,7 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 					<button id="ia-universo-cambiar" class="btn btn-default btn-xs">Cambiar</button>
 				</div>
 				<div id="ia-msgs"></div>
+				<div id="ia-sugerencias"></div>
 				<div id="ia-input-row">
 					<input id="ia-pregunta" class="form-control" placeholder="Pregunta sobre piezas, recolecciones o talleres...">
 					<button id="ia-enviar" class="btn btn-primary">Enviar</button>
@@ -73,28 +82,89 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		return t;
 	}
 
+	// El Desk no renderiza Markdown: las tablas del resumen llegaban como texto con
+	// pipes y, debajo, se pintaba otra tabla HTML con los alias crudos del
+	// resultado. Aquí se convierte el Markdown a HTML (solo respuestas del
+	// asistente) y se sanea: lo único que se permite es formato, nunca atributos.
+	const ETIQUETAS_OK = new Set([
+		"P", "BR", "STRONG", "EM", "B", "I", "UL", "OL", "LI", "HR",
+		"TABLE", "THEAD", "TBODY", "TR", "TH", "TD", "CODE", "PRE",
+		"H1", "H2", "H3", "H4",
+	]);
+
+	function limpiarHtml(html) {
+		const cuerpo = new DOMParser().parseFromString("<div>" + html + "</div>", "text/html").body;
+		const recorrer = (nodo) => {
+			for (const hijo of Array.from(nodo.childNodes)) {
+				if (hijo.nodeType === 1) {
+					if (!ETIQUETAS_OK.has(hijo.tagName)) {
+						recorrer(hijo);
+						hijo.replaceWith(...Array.from(hijo.childNodes));
+						continue;
+					}
+					for (const at of Array.from(hijo.attributes)) hijo.removeAttribute(at.name);
+					recorrer(hijo);
+				} else if (hijo.nodeType !== 3) {
+					hijo.remove();
+				}
+			}
+		};
+		recorrer(cuerpo);
+		return cuerpo.innerHTML;
+	}
+
+	function mdAHtml(texto) {
+		if (typeof frappe.markdown !== "function") return null;
+		frappe.markdown(""); // crea frappe.md2html si aún no existe
+		// Converter propio: activar tablas en el compartido cambiaría el resto del Desk.
+		if (!frappe.iaMd2html && frappe.md2html && frappe.md2html.constructor) {
+			frappe.iaMd2html = new frappe.md2html.constructor();
+			frappe.iaMd2html.setOption("tables", true);
+			frappe.iaMd2html.setOption("breaks", true);
+		}
+		if (frappe.iaMd2html) return frappe.iaMd2html.makeHtml(texto || "");
+		return frappe.markdown(texto || "");
+	}
+
+	// ¿La respuesta ya trae una tabla en Markdown? Entonces no hay que añadir
+	// además la tabla HTML del resultado: sería la misma cifra dos veces.
+	function traeTabla(texto) {
+		return /\|\s*:?-{3,}/.test(texto || "");
+	}
+
+	// Una sola celda (una cifra) no necesita tabla: la frase ya la dice.
+	function esCifraUnica(tabla) {
+		return !!tabla && (tabla.filas || []).length === 1 && (tabla.columnas || []).length === 1;
+	}
+
 	function addMsg(rol, contenido) {
 		const div = $("<div>").addClass("ia-msg " + (rol === "usuario" ? "ia-user" : "ia-bot"));
-		$("<div>").addClass("ia-pre").text(contenido).appendTo(div);
+		const cuerpo = $("<div>").addClass("ia-pre");
+		const html = rol === "usuario" ? null : mdAHtml(contenido);
+		if (html) cuerpo.addClass("ia-md").html(limpiarHtml(html));
+		else cuerpo.text(contenido);
+		cuerpo.appendTo(div);
 		div.appendTo($msgs);
 		$msgs.scrollTop($msgs[0].scrollHeight);
 		return div;
 	}
 
-	function addTabla(div, tabla, spec, coberturaTxt, idx) {
+	function addTabla(div, tabla, spec, coberturaTxt, idx, omitirTabla) {
 		if (!tabla || !tabla.columnas) return;
-		const t = $("<table>").addClass("ia-tbl");
-		const thead = $("<thead>").appendTo(t);
-		const trh = $("<tr>").appendTo(thead);
-		tabla.columnas.forEach((c) => $("<th>").text(c).appendTo(trh));
-		const tb = $("<tbody>").appendTo(t);
-		tabla.filas.slice(0, 50).forEach((f) => {
-			const tr = $("<tr>").appendTo(tb);
-			f.forEach((v) => $("<td>").text(esc(v)).appendTo(tr));
-		});
-		t.appendTo(div);
-		if (tabla.filas.length > 50) {
-			$("<div>").addClass("ia-cob").text(`Mostrando 50 de ${tabla.filas.length} filas.`).appendTo(div);
+		if (!omitirTabla) {
+			const t = $("<table>").addClass("ia-tbl");
+			const thead = $("<thead>").appendTo(t);
+			const trh = $("<tr>").appendTo(thead);
+			tabla.columnas.forEach((c) => $("<th>").text(c).appendTo(trh));
+			const tb = $("<tbody>").appendTo(t);
+			tabla.filas.slice(0, 50).forEach((f) => {
+				const tr = $("<tr>").appendTo(tb);
+				f.forEach((v) => $("<td>").text(esc(v)).appendTo(tr));
+			});
+			t.appendTo(div);
+			if (tabla.filas.length > 50) {
+				$("<div>").addClass("ia-cob").text(`Mostrando 50 de ${tabla.filas.length} filas.`).appendTo(div);
+			}
 		}
 		const acts = $("<div>").addClass("ia-actions").appendTo(div);
 		if (spec && spec.render_chart) {
@@ -110,8 +180,18 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 
 	function renderAsistente(m) {
 		const div = addMsg("asistente", m.contenido);
-		if (m.coberturaTxt) $("<div>").addClass("ia-cob").text(m.coberturaTxt).appendTo(div);
-		addTabla(div, m.tabla, m.spec, m.coberturaTxt, mensajes.length - 1);
+		const yaExplicada = /cobertura/i.test(m.contenido || "");
+		if (m.coberturaTxt && !yaExplicada) {
+			$("<div>").addClass("ia-cob").text(m.coberturaTxt).appendTo(div);
+		}
+		addTabla(
+			div,
+			m.tabla,
+			m.spec,
+			m.coberturaTxt,
+			mensajes.length - 1,
+			traeTabla(m.contenido) || esCifraUnica(m.tabla)
+		);
 	}
 
 	function setUniverso(u, nombre) {
@@ -152,8 +232,26 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		page.body.find("#ia-tab-chat").toggleClass("btn-primary", v === "chat").toggleClass("btn-default", v !== "chat");
 		page.body.find("#ia-tab-rep").toggleClass("btn-primary", v === "reportes").toggleClass("btn-default", v !== "reportes");
 		page.body.find("#ia-input-row").toggle(v === "chat");
+		page.body.find("#ia-sugerencias").toggle(v === "chat");
 		if (v === "chat") cargarHistorial();
 		else cargarReportes();
+	}
+
+	// Preguntas sugeridas: vienen de Molduplastic IA Settings > Sugerencias
+	// (activas, en orden). Un clic lanza la pregunta, no la copia al input.
+	function cargarSugerencias() {
+		frappe.call(API + ".sugerencias").then((r) => {
+			const $cont = page.body.find("#ia-sugerencias").empty();
+			(r.message || []).forEach((texto) => {
+				$("<button>").attr("type", "button").addClass("ia-chip").text(texto)
+					.on("click", () => {
+						if (state.cargando) return;
+						$input.val("");
+						enviarPregunta(texto);
+					})
+					.appendTo($cont);
+			});
+		});
 	}
 
 	function cargarHistorial() {
@@ -376,4 +474,5 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 	$input.on("keyup", (e) => { if (e.key === "Enter") preguntar(); });
 
 	setVista("chat");
+	cargarSugerencias();
 };

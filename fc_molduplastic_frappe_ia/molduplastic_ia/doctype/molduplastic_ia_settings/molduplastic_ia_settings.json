@@ -15,7 +15,9 @@
     "max_limit",
     "column_break_ia3",
     "max_llamadas_por_minuto",
-    "max_tokens_respuesta"
+    "max_tokens_respuesta",
+    "sugerencias_section",
+    "sugerencias"
   ],
   "fields": [
     {
@@ -82,6 +84,17 @@
       "fieldname": "max_tokens_respuesta",
       "fieldtype": "Int",
       "label": "Máx. tokens de respuesta (solo HTTP)"
+    },
+    {
+      "fieldname": "sugerencias_section",
+      "fieldtype": "Section Break",
+      "label": "Sugerencias del asistente"
+    },
+    {
+      "fieldname": "sugerencias",
+      "fieldtype": "Table",
+      "label": "Sugerencias",
+      "options": "IA Sugerencias"
     }
   ],
   "index_web_pages_for_search": 0,
