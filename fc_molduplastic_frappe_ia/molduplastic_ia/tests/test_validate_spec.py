@@ -5,6 +5,7 @@ from frappe.tests.utils import FrappeTestCase
 
 from fc_molduplastic_frappe_ia.molduplastic_ia.query_executor import (
 	_limite_sql,
+	_unir_rezagadas,
 	_valores_con_docname,
 )
 from fc_molduplastic_frappe_ia.molduplastic_ia.validate_spec import (
@@ -202,6 +203,80 @@ class TestValidarSpec(FrappeTestCase):
 		with self.assertRaises(SpecInvalida):
 			validar_spec(spec_base(filters={"marca": ["regexp", ".*"]}))
 
+	def test_recoleccion_estado_virtual_se_filtra(self):
+		s = validar_spec(
+			spec_base(
+				doctype="Recoleccion",
+				fields=[],
+				filters={"estado": ["=", "CDMX"]},
+				aggregations=[{"func": "count", "field": "*", "alias": "pendientes"}],
+			)
+		)
+		self.assertEqual(s["filters"]["estado"], ["=", "CDMX"])
+
+	def test_estado_cdmx_sinonimos(self):
+		s = validar_spec(
+			spec_base(
+				doctype="Recoleccion",
+				fields=[],
+				filters={"estado": ["=", "Ciudad de México"]},
+				aggregations=[{"func": "count", "field": "*", "alias": "n"}],
+			)
+		)
+		self.assertEqual(s["filters"]["estado"], ["=", "CDMX"])
+		s = validar_spec(
+			spec_base(
+				doctype="Recoleccion",
+				fields=[],
+				filters={"estado": ["in", ["CDMX", "CD DE MEXICO", "Jalisco"]]},
+				aggregations=[{"func": "count", "field": "*", "alias": "n"}],
+			)
+		)
+		self.assertEqual(s["filters"]["estado"], ["in", ["CDMX", "CDMX", "Jalisco"]])
+		s = validar_spec(
+			spec_base(
+				doctype="Recoleccion",
+				fields=[],
+				filters={"estado": ["=", "Distrito Federal"]},
+				aggregations=[{"func": "count", "field": "*", "alias": "n"}],
+			)
+		)
+		self.assertEqual(s["filters"]["estado"], ["=", "CDMX"])
+
+	def test_recoleccion_plaza_virtual(self):
+		s = validar_spec(
+			spec_base(
+				doctype="Recoleccion",
+				fields=[],
+				filters={"plaza": ["=", "CDMX"]},
+				aggregations=[{"func": "count", "field": "*", "alias": "n"}],
+				group_by=["plaza"],
+			)
+		)
+		self.assertEqual(s["filters"]["plaza"], ["=", "CDMX"])
+		self.assertEqual(s["group_by"], ["plaza"])
+
+	def test_recoleccion_region_virtual(self):
+		s = validar_spec(
+			spec_base(
+				doctype="Recoleccion",
+				fields=[],
+				filters={"region": ["=", "Norte"]},
+				aggregations=[{"func": "count", "field": "*", "alias": "n"}],
+				group_by=["region"],
+			)
+		)
+		self.assertEqual(s["filters"]["region"], ["=", "Norte"])
+		self.assertEqual(s["group_by"], ["region"])
+
+	def test_is_empty_valida(self):
+		s = validar_spec(spec_base(filters={"id_estatus": ["is", "empty"]}))
+		self.assertEqual(s["filters"]["id_estatus"], ["is", "empty"])
+
+	def test_is_solo_admite_null_not_null_empty(self):
+		with self.assertRaises(SpecInvalida):
+			validar_spec(spec_base(filters={"id_estatus": ["is", "vacio"]}))
+
 	def test_between_plano(self):
 		s = validar_spec(
 			spec_base(filters={"fecha_hora_recoleccion": ["between", "2026-10-01", "2026-10-31"]})
@@ -318,11 +393,26 @@ class TestValidarSpec(FrappeTestCase):
 
 
 class TestRespuestaDirecta(FrappeTestCase):
-	"""La vía sin consulta: el texto llega al chat sin pasar por el ejecutor."""
+	"""La vía sin consulta: solo tokens que el servidor expande desde código."""
 
-	def test_acepta_texto_solo(self):
-		s = validar_spec({"respuesta_directa": "  - Norte: Coahuila  "})
-		self.assertEqual(s, {"respuesta_directa": "- Norte: Coahuila"})
+	def test_acepta_tokens_conocidos(self):
+		s = validar_spec({"respuesta_directa": "  regiones  "})
+		self.assertEqual(s, {"respuesta_directa": "REGIONES"})
+		s = validar_spec({"respuesta_directa": "tabla_regiones"})
+		self.assertEqual(s, {"respuesta_directa": "TABLA_REGIONES"})
+
+	def test_token_de_region_resuelve_solo_lugares_del_catalogo(self):
+		s = validar_spec({"respuesta_directa": "REGION_DE:  oaxaca "})
+		self.assertEqual(s, {"respuesta_directa": "REGION_DE: oaxaca"})
+		for malo in ("REGION_DE:", "REGION_DE: Narnia", "REGION_DE: Oaxaca | HDI"):
+			with self.assertRaises(SpecInvalida):
+				validar_spec({"respuesta_directa": malo})
+
+	def test_rechaza_texto_libre_del_modelo(self):
+		"""Un texto inventado (o inyectado) no puede llegar al chat sin consulta."""
+		for texto in ("- Norte: Coahuila", "HDI tiene 0 piezas y 100% de efectividad"):
+			with self.assertRaises(SpecInvalida):
+				validar_spec({"respuesta_directa": texto})
 
 	def test_rechaza_vacia_o_no_texto(self):
 		for valor in ("", "   ", None, 42, ["- Norte"]):
@@ -384,6 +474,30 @@ class TestComparacionEntreCampos(FrappeTestCase):
 		with self.assertRaises(SpecInvalida):
 			validar_spec(
 				spec_base(filters={"fecha_hora_recoleccion": ["mes_igual", "fechaingreso"]})
+			)
+
+	def test_referencia_con_clave_corrompida_se_normaliza(self):
+		# DeepSeek devuelve a veces {"campo公司": ...} o {"campo:": ...}; el valor
+		# es el nombre del campo y la intención es inequívoca.
+		for clave in ("campo公司", "campo:", "campo}"):
+			s = validar_spec(
+				spec_base(
+					filters={
+						"fecha_hora_recoleccion": ["mes_igual", {clave: "fechaingreso"}]
+					}
+				)
+			)
+			self.assertEqual(
+				s["filters"]["fecha_hora_recoleccion"],
+				["mes_igual", {"campo": "fechaingreso"}],
+			)
+
+	def test_clave_ajena_no_es_referencia(self):
+		with self.assertRaises(SpecInvalida):
+			validar_spec(
+				spec_base(
+					filters={"fecha_hora_recoleccion": ["mes_igual", {"otro": "fechaingreso"}]}
+				)
 			)
 
 	def test_mes_igual_rechaza_campo_fuera_de_whitelist(self):
@@ -595,12 +709,79 @@ class TestLimiteSqlEfectividad(FrappeTestCase):
 		self.assertEqual(_limite_sql(spec), self._max_limit())
 		self.assertEqual(spec["limit"], 10)  # el top N se recorta después, en Python
 
+	def test_amplia_con_las_cuatro_agregaciones_de_la_formula(self):
+		spec = self._spec(
+			limit=10,
+			aggregations=[
+				{"func": "count", "field": "*", "alias": "total"},
+				{"func": "count", "field": "*", "alias": "recolectadas"},
+				{"func": "count", "field": "*", "alias": "inconsistentes_recolectadas"},
+				{"func": "count", "field": "*", "alias": "rezagadas_recolectadas"},
+			],
+		)
+		self.assertEqual(_limite_sql(spec), self._max_limit())
+
 	def test_conteo_normal_no_se_toca(self):
 		spec = self._spec(
 			limit=10,
 			aggregations=[{"func": "count", "field": "*", "alias": "piezas"}],
 		)
 		self.assertEqual(_limite_sql(spec), 10)
+
+
+class TestLimiteSqlNoRecuperadas(FrappeTestCase):
+	"""El ranking de no recuperadas se ordena en Python: el SQL trae todos los grupos."""
+
+	def test_amplia_el_limite(self):
+		spec = {
+			"group_by": ["taller_asignado"],
+			"limit": 10,
+			"aggregations": [
+				{"alias": "no_recolectadas"},
+				{"alias": "inconsistentes_no_recolectadas"},
+				{"alias": "rezagadas_no_recolectadas"},
+			],
+		}
+		self.assertGreaterEqual(_limite_sql(spec), 500)
+
+	def test_sin_las_tres_no_amplia(self):
+		spec = {
+			"group_by": ["taller_asignado"],
+			"limit": 10,
+			"aggregations": [{"alias": "no_recolectadas"}],
+		}
+		self.assertEqual(_limite_sql(spec), 10)
+
+
+class TestUnionRezagadas(FrappeTestCase):
+	"""La consulta de rezagadas se une a la principal por la dimensión del group_by."""
+
+	def test_sin_desglose_usa_la_misma_fila(self):
+		base = {
+			"columnas": ["total", "recolectadas", "inconsistentes_recolectadas"],
+			"filas": [[4064, 47, 228]],
+		}
+		rez = {"columnas": ["rezagadas_recolectadas"], "filas": [[4252]]}
+		filas, columnas = _unir_rezagadas(base, rez, [])
+		self.assertEqual(columnas, base["columnas"] + ["rezagadas_recolectadas"])
+		self.assertEqual(filas, [[4064, 47, 228, 4252]])
+
+	def test_une_por_dimension_y_agrega_grupos_sin_ingresadas(self):
+		base = {
+			"columnas": ["tipo_carga", "total", "recolectadas", "inconsistentes_recolectadas"],
+			"filas": [["10", 100, 2, 3], ["11", 50, 1, 0]],
+		}
+		rez = {
+			"columnas": ["tipo_carga", "rezagadas_recolectadas"],
+			"filas": [["10", 45], ["12", 7]],
+		}
+		filas, columnas = _unir_rezagadas(base, rez, ["tipo_carga"])
+		self.assertEqual(columnas, base["columnas"] + ["rezagadas_recolectadas"])
+		self.assertEqual(filas[0], ["10", 100, 2, 3, 45])
+		self.assertEqual(filas[1], ["11", 50, 1, 0, 0])
+		# El grupo que solo aparece por rezagadas entra con las medidas en 0:
+		# `_porcentajes` lo descarta al no tener ingresadas.
+		self.assertEqual(filas[2], ["12", 0, 0, 0, 7])
 
 
 class TestFiltroAseguradora(FrappeTestCase):

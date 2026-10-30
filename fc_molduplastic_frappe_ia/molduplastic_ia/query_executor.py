@@ -12,7 +12,7 @@ agregaciones GROUP BY no son viables en Python.
 
 import frappe
 
-from fc_molduplastic_frappe_ia.molduplastic_ia.permissions import get_tenant_scope
+from fc_molduplastic_frappe_ia.molduplastic_ia.permissions import _alcance_efectivo, get_tenant_scope
 from fc_molduplastic_frappe_ia.molduplastic_ia.validate_spec import validar_spec
 
 TABLAS = {"Pieza": "tabPieza", "Recoleccion": "tabRecoleccion", "Taller": "tabTaller"}
@@ -27,22 +27,146 @@ AGGS_SQL = {
 }
 
 
+ALIAS_REZAGADAS = "rezagadas_recolectadas"
+
+
 def ejecutar(spec, user=None, alcance=None):
 	"""Ejecuta un spec validado. Retorna {columnas, filas, cobertura}."""
-	spec = _spec_con_aseguradora(validar_spec(spec))
+	spec = validar_spec(spec)
+	user = user or frappe.session.user
+	if _un_solo_tenant(user, alcance):
+		# Con un solo tenant el filtro por aseguradora no puede ampliar nada: o
+		# es redundante (la propia) o da vacío (otra). Se descarta para que una
+		# pregunta por otra aseguradora no devuelva "no hay datos" ni sugiera
+		# que el filtro tuvo efecto; el aviso de alcance lo pone ask().
+		if _tiene_filtro_aseguradora(spec):
+			frappe.logger("molduplastic_ia").info(
+				f"Filtro de aseguradora descartado por alcance único ({user}): {spec.get('filters')}"
+			)
+		spec = _sin_filtro_aseguradora(spec)
+	spec = _spec_con_aseguradora(spec)
+	if _lleva_rezagadas(spec):
+		return _ejecutar_con_rezagadas(spec, user, alcance)
+	return _ejecutar_spec(spec, user, alcance)
+
+
+def _un_solo_tenant(user, alcance):
+	"""True si el alcance efectivo es exactamente una aseguradora."""
+	aseguradoras = _alcance_efectivo(user, alcance)
+	return aseguradoras is not None and len(aseguradoras) == 1
+
+
+def _tiene_filtro_aseguradora(spec):
+	if "aseguradora" in (spec.get("filters") or {}):
+		return True
+	return any("aseguradora" in (agg.get("filtros") or {}) for agg in spec.get("aggregations") or [])
+
+
+def _sin_filtro_aseguradora(spec):
+	"""Quita `aseguradora` de los filtros (global y de agregaciones)."""
+	quitar = lambda filtros: {c: v for c, v in (filtros or {}).items() if c != "aseguradora"}
+	nuevo = {**spec, "filters": quitar(spec.get("filters"))}
+	nuevo["aggregations"] = [
+		{**agg, "filtros": quitar(agg.get("filtros"))} for agg in spec.get("aggregations") or []
+	]
+	return nuevo
+
+
+def _lleva_rezagadas(spec):
+	aggs = spec.get("aggregations") or []
+	return len(aggs) > 1 and any(
+		str(a.get("alias") or "").strip().lower() == ALIAS_REZAGADAS for a in aggs
+	)
+
+
+def _ejecutar_spec(spec, user, alcance, con_cobertura=True):
+	"""Una consulta: WHERE + agregaciones + (opcional) cobertura."""
 	doctype = spec["doctype"]
 	tabla = TABLAS[doctype]
-	user = user or frappe.session.user
-
 	where, params = _construir_where(tabla, spec["filters"], doctype, user, alcance)
 	if where == "1 = 0":
-		universo = 0
 		filas, columnas = [], _columnas_salida(spec)
 	else:
-		universo = _contar(tabla, where, params)
 		filas, columnas = _consultar(tabla, spec, where, params)
+	if not con_cobertura:
+		return {"columnas": columnas, "filas": filas, "cobertura": {}}
+	universo = 0 if where == "1 = 0" else _contar(tabla, where, params)
 	cobertura = _cobertura(tabla, spec, where, params, universo)
 	return {"columnas": columnas, "filas": filas, "cobertura": cobertura}
+
+
+def _ejecutar_con_rezagadas(spec, user, alcance):
+	"""La efectividad mezcla dos poblaciones: se consultan por separado y se unen.
+
+	Las tres primeras categorías van sobre `fechaingreso`
+	(`idx_ia_aseg_fechaingreso_siniestro`); las rezagadas, sobre
+	`fecha_hora_recoleccion` (`idx_ia_aseg_fecharecoleccion`). En un solo SQL el
+	WHERE no puede acotar las dos fechas a la vez: con `filters` vacío MySQL
+	escanea el tenant completo (GNP en el año tardaba 11 minutos; separadas son
+	~14 s + ~28 s, cada una por su índice).
+
+	Sin cobertura a propósito: los campos que mide (`id_estatus`,
+	`fecha_hora_recoleccion`) son las condiciones de la fórmula, y sus nulos
+	significan "no recolectada", no dato faltante. Medirla costaba minutos sobre
+	el año (GNP: 190 s contra 42 s) y el modelo la repetía como advertencia.
+	"""
+	aggs = spec["aggregations"]
+	rez = next(a for a in aggs if str(a.get("alias") or "").strip().lower() == ALIAS_REZAGADAS)
+	principal = {**spec, "aggregations": [a for a in aggs if a is not rez]}
+	# El período de las rezagadas es su recolección: el filtro global del spec
+	# (fechaingreso del período) no aplica; sus "filtros" ya traen todo.
+	aparte = {
+		**spec,
+		"filters": dict(rez.get("filtros") or {}),
+		"aggregations": [{k: v for k, v in rez.items() if k != "filtros"}],
+		"order_by": [],
+		"limit": _max_limit(),
+	}
+	base = _ejecutar_spec(principal, user, alcance, con_cobertura=False)
+	otros = _ejecutar_spec(aparte, user, alcance, con_cobertura=False)
+	base["filas"], base["columnas"] = _unir_rezagadas(base, otros, spec.get("group_by") or [])
+	return base
+
+
+def _unir_rezagadas(base, rez, dimensiones):
+	"""Une la consulta de rezagadas a la principal por la dimensión del group_by."""
+	col_b = list(base["columnas"])
+	col_r = list(rez["columnas"])
+	if ALIAS_REZAGADAS not in col_r:
+		return base["filas"], col_b
+	valor_rez = lambda fila: fila[col_r.index(ALIAS_REZAGADAS)] or 0
+	if not dimensiones:
+		# Sin desglose hay una sola fila: la rezagada va en la misma.
+		fila = list(base["filas"][0]) + [0] if base["filas"] else [0] * len(col_b)
+		if rez["filas"]:
+			fila[-1] = valor_rez(rez["filas"][0])
+		return [fila], col_b + [ALIAS_REZAGADAS]
+	if any(d not in col_b or d not in col_r for d in dimensiones):
+		return base["filas"], col_b
+	idx_b = [col_b.index(d) for d in dimensiones]
+	idx_r = [col_r.index(d) for d in dimensiones]
+	filas, pos = [], {}
+	for fila in base["filas"]:
+		clave = tuple(fila[i] for i in idx_b)
+		pos[clave] = len(filas)
+		filas.append(list(fila) + [0])
+	for fila in rez["filas"]:
+		clave = tuple(fila[i] for i in idx_r)
+		valor = valor_rez(fila)
+		if clave in pos:
+			filas[pos[clave]][-1] = valor
+			continue
+		# Grupo que solo aparece por rezagadas (sus ingresos son anteriores al
+		# período): se agrega con las medidas en 0. `_porcentajes` lo descarta
+		# porque no tiene ingresadas que medir.
+		nueva = [0] * len(col_b)
+		for i_b, i_r in zip(idx_b, idx_r):
+			nueva[i_b] = fila[i_r]
+		nueva.append(valor)
+		pos[clave] = len(filas)
+		filas.append(nueva)
+	return filas, col_b + [ALIAS_REZAGADAS]
+
 
 
 def _docname_aseguradora(valor, mapa):
@@ -89,9 +213,11 @@ def _spec_con_aseguradora(spec):
 		if not filtros or "aseguradora" not in filtros:
 			return filtros
 		if mapa is None:
+			# filas como diccionarios: `for name, nombre in ...` desempacaba las
+			# claves ("nombre"/"name") y el mapa quedaba inservible.
 			mapa = {
-				str(nombre).strip().lower(): str(name)
-				for name, nombre in frappe.get_all("Aseguradora", fields=["name", "nombre"])
+				str(fila["nombre"]).strip().lower(): str(fila["name"])
+				for fila in frappe.get_all("Aseguradora", fields=["name", "nombre"])
 			}
 		return {**filtros, "aseguradora": _valores_con_docname(filtros["aseguradora"], mapa)}
 
@@ -109,16 +235,52 @@ def _col(tabla, campo):
 	`region_pais` no es una columna de tabPieza: es un CASE sobre
 	estadolocalidad que arma regiones.py. El mapa vive en el código, así que
 	el LLM no puede escribir la expresión, solo pedirla por nombre.
+	`Recoleccion.estado` tampoco existe: es el estado del taller asignado y se
+	resuelve con una subconsulta sobre Taller.
 	"""
 	if tabla == "tabPieza" and campo == "region_pais":
 		from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import expresion_region
 
 		return expresion_region()
+	if tabla == "tabTaller" and campo == "estado":
+		from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import expresion_estado
+
+		return expresion_estado(f"`{tabla}`.`{campo}`")
+	if tabla == "tabRecoleccion" and campo == "estado":
+		from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import expresion_estado
+
+		sub = expresion_estado("`tabTaller`.`estado`")
+		return (
+			f"(SELECT {sub} FROM `tabTaller`"
+			f" WHERE `tabTaller`.`name` = `{tabla}`.`id_taller`)"
+		)
+	if tabla == "tabRecoleccion" and campo == "region":
+		from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import expresion_region_de_plaza
+
+		return expresion_region_de_plaza(_col(tabla, "plaza"))
+	if tabla == "tabRecoleccion" and campo == "plaza":
+		# Recolector-Talleres guarda la plaza del taller (id_taller_plaza). El
+		# par taller+recolector es el exacto; si no está, se cae al taller.
+		rt = "`tabRecolector-Talleres`"
+		return (
+			"(SELECT COALESCE("
+			f"(SELECT {rt}.`id_taller_plaza` FROM {rt}"
+			f" WHERE {rt}.`id_taller` = `{tabla}`.`id_taller`"
+			f" AND {rt}.`id_recolector` = `{tabla}`.`id_recolector` LIMIT 1),"
+			f"(SELECT {rt}.`id_taller_plaza` FROM {rt}"
+			f" WHERE {rt}.`id_taller` = `{tabla}`.`id_taller` LIMIT 1)))"
+		)
 	return f"`{tabla}`.`{campo}`"
 
 
 def _es_virtual(tabla, campo):
 	if tabla == "tabPieza" and campo == "region_pais":
+		return True
+	if campo == "estado" and tabla in ("tabRecoleccion", "tabTaller"):
+		return True
+	if campo == "plaza" and tabla == "tabRecoleccion":
+		return True
+	if campo == "region" and tabla == "tabRecoleccion":
 		return True
 	return False
 
@@ -171,6 +333,10 @@ def _condicion_simple(tabla, campo, cond):
 		cond = ["=", cond]
 	op = cond[0]
 	if op == "is":
+		if cond[1] == "empty":
+			# "Vacío" en el negocio es null o cadena vacía; la lista de
+			# condiciones del spec se une con AND, así que el OR va aquí.
+			return f"({col} IS NULL OR {col} = '')"
 		return f"{col} IS {'NULL' if cond[1] == 'null' else 'NOT NULL'}"
 	if op in ("mes_distinto", "mes_igual"):
 		otro = _col(tabla, cond[1]["campo"])
@@ -232,6 +398,10 @@ def _columnas_salida(spec):
 	return list(spec["fields"])
 
 
+def _max_limit():
+	return int(frappe.get_cached_doc("Molduplastic IA Settings").max_limit or 500)
+
+
 def _limite_sql(spec):
 	"""LIMIT del SQL, ampliado cuando la medida es la efectividad.
 
@@ -243,13 +413,16 @@ def _limite_sql(spec):
 	respeta el `limit` pedido (un top 10 muestra 10).
 	"""
 	aggs = [a for a in (spec.get("aggregations") or []) if isinstance(a, dict)]
-	if len(aggs) != 2 or not spec.get("group_by"):
+	if not aggs or not spec.get("group_by"):
 		return spec["limit"]
 	alias = {str(a.get("alias") or "").strip().lower() for a in aggs}
-	if "recolectadas" not in alias:
-		return spec["limit"]
-	max_limit = int(frappe.get_cached_doc("Molduplastic IA Settings").max_limit or 500)
-	return max(spec["limit"], max_limit)
+	if "recolectadas" in alias:
+		return max(spec["limit"], _max_limit())
+	# "No recuperadas" también se ordena en Python por la suma de las tres
+	# categorías: con el limit del modelo se perdían grupos antes de sumar.
+	if {"no_recolectadas", "inconsistentes_no_recolectadas", "rezagadas_no_recolectadas"} <= alias:
+		return max(spec["limit"], _max_limit())
+	return spec["limit"]
 
 
 def _consultar(tabla, spec, where, params):

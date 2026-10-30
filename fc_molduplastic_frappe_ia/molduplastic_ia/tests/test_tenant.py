@@ -5,10 +5,35 @@ from frappe.tests.utils import FrappeTestCase
 
 from fc_molduplastic_frappe_ia.molduplastic_ia.permissions import get_user_aseguradoras
 from fc_molduplastic_frappe_ia.molduplastic_ia.query_executor import ejecutar
-from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import ESTADOS, REGIONES, tabla_regiones
+from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import (
+	ESTADOS,
+	PLAZAS_POR_REGION,
+	REGIONES,
+	region_de,
+	tabla_regiones,
+)
 from fc_molduplastic_frappe_ia.molduplastic_ia.validate_spec import SpecInvalida
 
 USUARIO_GNP = "pruebas.gnp@molduplastic.test"
+
+
+class TestRegionDe(FrappeTestCase):
+	"""La región de un lugar la resuelve el servidor, no el modelo."""
+
+	def test_resuelve_estados_alias_y_ciudades(self):
+		self.assertEqual(region_de("Oaxaca"), "Centro y Golfo")
+		self.assertEqual(region_de("oaxaca"), "Centro y Golfo")
+		self.assertEqual(region_de("Ciudad de México"), "CDMX y Área Metropolitana")
+		self.assertEqual(region_de("CDMX"), "CDMX y Área Metropolitana")
+		self.assertEqual(region_de("Tijuana"), "Occidente")
+
+	def test_lugar_desconocido_devuelve_none(self):
+		for lugar in ("Narnia", "", "   ", None, 42):
+			self.assertIsNone(region_de(lugar), lugar)
+
+	def test_todos_los_estados_del_mapa_se_resuelven(self):
+		for estado, region in ESTADOS.items():
+			self.assertEqual(region_de(estado), region, estado)
 
 
 class TestTablaRegiones(FrappeTestCase):
@@ -542,3 +567,339 @@ class TestRezagadas(FrappeTestCase):
 			alcance="1",
 		)
 		self.assertIn("fechaingreso", res["cobertura"]["campos"])
+
+
+class TestEfectividadConRezagadas(FrappeTestCase):
+	"""La efectividad suma las tres categorías y las rezagadas van en otra consulta."""
+
+	SEP = ["2026-09-01 00:00:00", "2026-09-30 23:59:59"]
+
+	def _spec(self):
+		desde, hasta = self.SEP
+		return {
+			"doctype": "Pieza",
+			"fields": [],
+			"filters": {"fechaingreso": ["between", desde, hasta], "recolectable": ["=", 1]},
+			"aggregations": [
+				{"func": "count", "field": "*", "alias": "total"},
+				{
+					"func": "count",
+					"field": "*",
+					"alias": "recolectadas",
+					"filtros": {
+						"id_estatus": ["=", 100],
+						"fecha_hora_recoleccion": [
+							["mes_igual", {"campo": "fechaingreso"}],
+							[">=", {"campo": "fechaingreso"}],
+						],
+					},
+				},
+				{
+					"func": "count",
+					"field": "*",
+					"alias": "inconsistentes_recolectadas",
+					"filtros": {
+						"fecha_hora_recoleccion": ["<", {"campo": "fechaingreso"}],
+						"id_estatus": ["=", 100],
+					},
+				},
+				{
+					"func": "count",
+					"field": "*",
+					"alias": "rezagadas_recolectadas",
+					"filtros": {
+						"fecha_hora_recoleccion": ["between", desde, hasta],
+						"fechaingreso": ["<", desde],
+						"id_estatus": ["=", 100],
+					},
+				},
+			],
+			"group_by": [],
+			"limit": 1,
+		}
+
+	def test_coincide_con_sql_directo_y_une_las_rezagadas(self):
+		res = ejecutar(self._spec(), "Administrator", alcance="1")
+		self.assertEqual(
+			res["columnas"],
+			["total", "recolectadas", "inconsistentes_recolectadas", "rezagadas_recolectadas"],
+		)
+		total, rec, inc, rez = res["filas"][0]
+		esperado = frappe.db.sql(
+			"SELECT COUNT(*), "
+			"COUNT(CASE WHEN id_estatus = 100 AND fecha_hora_recoleccion >= fechaingreso "
+			"AND DATE_FORMAT(fecha_hora_recoleccion, '%%Y-%%m') = "
+			"DATE_FORMAT(fechaingreso, '%%Y-%%m') THEN 1 END), "
+			"COUNT(CASE WHEN fecha_hora_recoleccion < fechaingreso "
+			"AND id_estatus = 100 THEN 1 END) "
+			"FROM tabPieza WHERE aseguradora = '1' AND recolectable = 1 "
+			"AND fechaingreso BETWEEN %s AND %s",
+			tuple(self.SEP),
+		)[0]
+		rez_esperado = frappe.db.sql(
+			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora = '1' "
+			"AND fecha_hora_recoleccion BETWEEN %s AND %s "
+			"AND fechaingreso < %s AND id_estatus = 100",
+			(self.SEP[0], self.SEP[1], self.SEP[0]),
+		)[0][0]
+		self.assertEqual((total, rec, inc), tuple(esperado))
+		self.assertEqual(rez, rez_esperado)
+		self.assertGreater(total, 0)
+
+
+class TestNoRecuperadas(FrappeTestCase):
+	"""No recuperadas = no recolectadas + inconsistentes + rezagadas no recolectadas."""
+
+	def test_suma_de_las_tres_contra_sql(self):
+		from fc_molduplastic_frappe_ia.molduplastic_ia import api
+		from fc_molduplastic_frappe_ia.molduplastic_ia.llm_factory import totales_no_recuperadas
+
+		desde, hasta = "2026-09-01 00:00:00", "2026-09-30 23:59:59"
+		spec = {
+			"doctype": "Pieza",
+			"fields": [],
+			"filters": {},
+			"aggregations": api._aggs_no_recuperadas(desde, hasta),
+			"group_by": [],
+			"limit": 10,
+		}
+		# Con tenant la consulta usa el índice por aseguradora (la de TODAS
+		# escanea la tabla completa y hace el test eterno).
+		res = ejecutar(spec, "Administrator", alcance="1")
+		base = "aseguradora = '1' AND id_estatus IN ('200','201','202','203','204','205','206')"
+		directo = (
+			frappe.db.sql(
+				f"""SELECT COUNT(*) FROM tabPieza WHERE {base}
+				AND fechaingreso BETWEEN %s AND %s AND recolectable = 1
+				AND fecha_hora_recoleccion >= fechaingreso""",
+				(desde, hasta),
+			)[0][0]
+			+ frappe.db.sql(
+				f"""SELECT COUNT(*) FROM tabPieza WHERE {base}
+				AND fechaingreso BETWEEN %s AND %s
+				AND fecha_hora_recoleccion < fechaingreso""",
+				(desde, hasta),
+			)[0][0]
+			+ frappe.db.sql(
+				f"""SELECT COUNT(*) FROM tabPieza WHERE {base}
+				AND fecha_hora_recoleccion BETWEEN %s AND %s
+				AND fechaingreso < %s""",
+				(desde, hasta, desde),
+			)[0][0]
+		)
+		self.assertGreater(directo, 0)
+		self.assertEqual(totales_no_recuperadas(res["filas"], res)[0], directo)
+
+
+class TestRecoleccionPendientes(FrappeTestCase):
+	"""Pendiente = estatus 301 (Iniciada), inicio en el período y sin fecha_completado."""
+
+	def _rango(self):
+		ahora = frappe.utils.now_datetime()
+		inicio = ahora.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+		return (
+			inicio.strftime("%Y-%m-%d %H:%M:%S"),
+			ahora.strftime("%Y-%m-%d %H:%M:%S"),
+		)
+
+	def test_pendientes_definicion_del_dueno(self):
+		desde, hasta = self._rango()
+		res = ejecutar(
+			{
+				"doctype": "Recoleccion",
+				"fields": [],
+				"filters": {
+					"id_estatus": ["=", "301"],
+					"fecha_inicio": ["between", desde, hasta],
+					"fecha_completado": ["is", "empty"],
+				},
+				"aggregations": [{"func": "count", "field": "*", "alias": "pendientes"}],
+				"group_by": [],
+				"limit": 10,
+			},
+			"Administrator",
+		)
+		directo = frappe.db.sql(
+			"""SELECT COUNT(*) FROM tabRecoleccion
+			WHERE id_estatus = '301' AND fecha_inicio BETWEEN %s AND %s
+			  AND (fecha_completado IS NULL OR fecha_completado = '')""",
+			(desde, hasta),
+		)[0][0]
+		self.assertEqual(res["filas"][0][0], directo)
+
+	def test_estado_del_taller_filtra(self):
+		res = ejecutar(
+			{
+				"doctype": "Recoleccion",
+				"fields": [],
+				"filters": {
+					"id_estatus": ["=", "301"],
+					"fecha_inicio": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"],
+					"fecha_completado": ["is", "empty"],
+					"estado": ["=", "CDMX"],
+				},
+				"aggregations": [{"func": "count", "field": "*", "alias": "pendientes"}],
+				"group_by": [],
+				"limit": 10,
+			},
+			"Administrator",
+		)
+		directo = frappe.db.sql(
+			"""SELECT COUNT(*) FROM tabRecoleccion r
+			JOIN tabTaller t ON t.name = r.id_taller
+			WHERE r.id_estatus = '301'
+			  AND r.fecha_inicio BETWEEN '2026-09-01 00:00:00' AND '2026-09-30 23:59:59'
+			  AND (r.fecha_completado IS NULL OR r.fecha_completado = '')
+			  AND t.estado = 'CDMX'"""
+		)[0][0]
+		self.assertGreater(directo, 0)
+		self.assertEqual(res["filas"][0][0], directo)
+
+	def test_estado_sinonimos_cdmx(self):
+		base = {
+			"doctype": "Recoleccion",
+			"fields": [],
+			"filters": {
+				"id_estatus": ["=", "301"],
+				"fecha_inicio": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"],
+				"fecha_completado": ["is", "empty"],
+			},
+			"aggregations": [{"func": "count", "field": "*", "alias": "pendientes"}],
+			"group_by": [],
+			"limit": 10,
+		}
+		resultados = []
+		for valor in ("CDMX", "Ciudad de México", "CD DE MEXICO", "Distrito Federal"):
+			spec = {**base, "filters": {**base["filters"], "estado": ["=", valor]}}
+			res = ejecutar(spec, "Administrator")
+			resultados.append(res["filas"][0][0])
+		self.assertGreater(resultados[0], 0)
+		self.assertEqual(len(set(resultados)), 1)
+
+	def test_plaza_sale_de_recolector_talleres(self):
+		res = ejecutar(
+			{
+				"doctype": "Recoleccion",
+				"fields": [],
+				"filters": {
+					"id_estatus": ["=", "301"],
+					"fecha_inicio": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"],
+					"fecha_completado": ["is", "empty"],
+				},
+				"aggregations": [{"func": "count", "field": "*", "alias": "pendientes"}],
+				"group_by": ["plaza"],
+				"order_by": [{"field": "pendientes", "dir": "desc"}],
+				"limit": 50,
+			},
+			"Administrator",
+		)
+		directo = dict(
+			frappe.db.sql(
+				"""SELECT plaza, COUNT(*) FROM (
+				SELECT COALESCE(
+					(SELECT rt.id_taller_plaza FROM `tabRecolector-Talleres` rt
+					 WHERE rt.id_taller = r.id_taller AND rt.id_recolector = r.id_recolector LIMIT 1),
+					(SELECT rt.id_taller_plaza FROM `tabRecolector-Talleres` rt
+					 WHERE rt.id_taller = r.id_taller LIMIT 1)) AS plaza
+				FROM tabRecoleccion r
+				WHERE r.id_estatus = '301'
+				  AND r.fecha_inicio BETWEEN '2026-09-01 00:00:00' AND '2026-09-30 23:59:59'
+				  AND (r.fecha_completado IS NULL OR r.fecha_completado = '')
+				) x GROUP BY plaza"""
+			)
+		)
+		self.assertEqual({f[0]: f[1] for f in res["filas"]}, directo)
+		self.assertEqual(res["filas"][0][0], "CDMX")
+
+	def test_pendientes_por_region(self):
+		res = ejecutar(
+			{
+				"doctype": "Recoleccion",
+				"fields": [],
+				"filters": {
+					"id_estatus": ["=", "301"],
+					"fecha_inicio": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"],
+					"fecha_completado": ["is", "empty"],
+				},
+				"aggregations": [{"func": "count", "field": "*", "alias": "pendientes"}],
+				"group_by": ["region"],
+				"order_by": [{"field": "pendientes", "dir": "desc"}],
+				"limit": 50,
+			},
+			"Administrator",
+		)
+		# La región de cada plaza sale del mapa del código.
+		plaza_region = {
+			plaza: region for region, plazas in PLAZAS_POR_REGION.items() for plaza in plazas
+		}
+		plazas = frappe.db.sql(
+			"""SELECT COALESCE(
+				(SELECT rt.id_taller_plaza FROM `tabRecolector-Talleres` rt
+				 WHERE rt.id_taller = r.id_taller AND rt.id_recolector = r.id_recolector LIMIT 1),
+				(SELECT rt.id_taller_plaza FROM `tabRecolector-Talleres` rt
+				 WHERE rt.id_taller = r.id_taller LIMIT 1)) AS plaza, COUNT(*) n
+			FROM tabRecoleccion r
+			WHERE r.id_estatus = '301'
+			  AND r.fecha_inicio BETWEEN '2026-09-01 00:00:00' AND '2026-09-30 23:59:59'
+			  AND (r.fecha_completado IS NULL OR r.fecha_completado = '')
+			GROUP BY plaza""",
+			as_dict=True,
+		)
+		esperado = {}
+		for fila in plazas:
+			region = plaza_region.get(fila.plaza)
+			if region:
+				esperado[region] = esperado.get(region, 0) + fila.n
+		self.assertEqual({f[0]: f[1] for f in res["filas"]}, esperado)
+		self.assertEqual(res["filas"][0][0], "CDMX y Área Metropolitana")
+
+	def test_empty_cuenta_null_y_vacio(self):
+		res = ejecutar(
+			{
+				"doctype": "Recoleccion",
+				"fields": [],
+				"filters": {"fecha_completado": ["is", "empty"]},
+				"aggregations": [{"func": "count", "field": "*", "alias": "sin_completar"}],
+				"group_by": [],
+				"limit": 10,
+			},
+			"Administrator",
+		)
+		directo = frappe.db.sql(
+			"SELECT COUNT(*) FROM tabRecoleccion WHERE fecha_completado IS NULL OR fecha_completado = ''"
+		)[0][0]
+		self.assertEqual(res["filas"][0][0], directo)
+
+
+class TestFiltroAseguradoraEnExecutor(FrappeTestCase):
+	"""El filtro por aseguradora no manda sobre el alcance real."""
+
+	SPEC = {
+		"doctype": "Pieza",
+		"fields": [],
+		"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+		"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
+		"group_by": [],
+		"limit": 1,
+	}
+
+	def test_tenant_unico_ignora_filtro_de_otra_aseguradora(self):
+		frappe.set_user(USUARIO_GNP)
+		self.addCleanup(frappe.set_user, "Administrator")
+		con_filtro = ejecutar(
+			{**self.SPEC, "filters": {**self.SPEC["filters"], "aseguradora": ["=", "7"]}},
+			USUARIO_GNP,
+		)
+		sin_filtro = ejecutar(self.SPEC, USUARIO_GNP)
+		self.assertGreater(sin_filtro["filas"][0][0], 0)
+		self.assertEqual(con_filtro["filas"], sin_filtro["filas"])
+
+	def test_admin_todas_si_puede_filtrar_por_nombre(self):
+		spec = {**self.SPEC, "filters": {**self.SPEC["filters"], "aseguradora": ["=", "HDI"]}}
+		res = ejecutar(spec, "Administrator", alcance="TODAS")
+		directo = frappe.db.sql(
+			"""SELECT COUNT(*) FROM tabPieza
+			WHERE aseguradora = '7' AND fechaingreso BETWEEN '2026-09-01' AND '2026-09-30 23:59:59'"""
+		)[0][0]
+		self.assertEqual(res["filas"][0][0], directo)
+		self.assertGreater(directo, 0)

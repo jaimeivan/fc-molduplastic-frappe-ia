@@ -7,6 +7,7 @@
     "rol",
     "fecha_hora",
     "contenido",
+    "universo",
     "spec_json",
     "datos_json",
     "cobertura_json"
@@ -31,6 +32,12 @@
       "fieldtype": "Long Text",
       "in_list_view": 1,
       "label": "Contenido"
+    },
+    {
+      "fieldname": "universo",
+      "fieldtype": "Data",
+      "label": "Universo (aseguradora)",
+      "read_only": 1
     },
     {
       "fieldname": "spec_json",

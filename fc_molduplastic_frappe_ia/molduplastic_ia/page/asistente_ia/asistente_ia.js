@@ -132,6 +132,36 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		return /\|\s*:?-{3,}/.test(texto || "");
 	}
 
+	// Encabezados de tabla sin guiones bajos. El resultado crudo trae los
+	// nombres del esquema (id_taller, valor_pendientes); se muestran legibles
+	// sin tocar las columnas que usa el gráfico.
+	const NOMBRES_COLUMNA = {
+		id_plaza: "Plaza",
+		plaza: "Plaza",
+		id_taller: "Taller",
+		taller_asignado: "Taller",
+		parte_pieza: "Tipo de pieza",
+		region_pais: "Región",
+		region: "Región",
+		tipo_carga: "Tipo CDR",
+		tipo: "Submarca",
+		modelo: "Modelo",
+		estado: "Estado",
+		fechaingreso: "Fecha de ingreso",
+		fecha_hora_recoleccion: "Fecha de recolección",
+		fecha_inicio: "Fecha de inicio",
+		fecha_completado: "Fecha de completado",
+		preciovale: "Valor",
+	};
+
+	function tituloColumna(c) {
+		const clave = String(c || "");
+		const nombre = NOMBRES_COLUMNA[clave.toLowerCase()];
+		if (nombre) return nombre;
+		const texto = clave.replace(/_/g, " ").trim();
+		return texto ? texto.charAt(0).toUpperCase() + texto.slice(1) : clave;
+	}
+
 	// Una sola celda (una cifra) no necesita tabla: la frase ya la dice.
 	function esCifraUnica(tabla) {
 		return !!tabla && (tabla.filas || []).length === 1 && (tabla.columnas || []).length === 1;
@@ -155,7 +185,7 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			const t = $("<table>").addClass("ia-tbl");
 			const thead = $("<thead>").appendTo(t);
 			const trh = $("<tr>").appendTo(thead);
-			tabla.columnas.forEach((c) => $("<th>").text(c).appendTo(trh));
+			tabla.columnas.forEach((c) => $("<th>").text(tituloColumna(c)).appendTo(trh));
 			const tb = $("<tbody>").appendTo(t);
 			tabla.filas.slice(0, 50).forEach((f) => {
 				const tr = $("<tr>").appendTo(tb);
@@ -232,9 +262,18 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		page.body.find("#ia-tab-chat").toggleClass("btn-primary", v === "chat").toggleClass("btn-default", v !== "chat");
 		page.body.find("#ia-tab-rep").toggleClass("btn-primary", v === "reportes").toggleClass("btn-default", v !== "reportes");
 		page.body.find("#ia-input-row").toggle(v === "chat");
-		page.body.find("#ia-sugerencias").toggle(v === "chat");
+		actualizarSugerencias();
 		if (v === "chat") cargarHistorial();
 		else cargarReportes();
+	}
+
+	// Las sugerencias solo se ven en un chat nuevo (sin conversación y sin mensajes).
+	function esChatNuevo() {
+		return state.vista === "chat" && !state.conv && !state.pendiente && mensajes.length === 0;
+	}
+
+	function actualizarSugerencias() {
+		page.body.find("#ia-sugerencias").toggle(esChatNuevo());
 	}
 
 	// Preguntas sugeridas: vienen de Molduplastic IA Settings > Sugerencias
@@ -251,6 +290,7 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 					})
 					.appendTo($cont);
 			});
+			actualizarSugerencias();
 		});
 	}
 
@@ -276,8 +316,10 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			frappe.call(API + ".eliminar_conversacion", { nombre: name }).then(() => {
 				if (state.conv === name) {
 					state.conv = null;
+					setUniverso(null);
 					$msgs.empty();
 					mensajes.length = 0;
+					actualizarSugerencias();
 				}
 				cargarHistorial();
 			});
@@ -288,7 +330,7 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		frappe.call(API + ".obtener_conversacion", { nombre: name }).then((r) => {
 			const d = r.message;
 			state.conv = d.name;
-			setUniverso(d.universo || null, d.universo === "TODAS" ? "Todas las aseguradoras" : null);
+			setUniverso(d.universo || null, d.universo_nombre || (d.universo === "TODAS" ? "Todas las aseguradoras" : null));
 			state.vista = "chat";
 			$msgs.empty();
 			mensajes.length = 0;
@@ -324,6 +366,7 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 
 	function enviarPregunta(q) {
 		mensajes.push({ rol: "usuario" });
+		actualizarSugerencias();
 		addMsg("usuario", q);
 		const loader = $("<div>").addClass("ia-msg ia-bot ia-loader")
 			.html("<span></span><span></span><span></span>").appendTo($msgs);

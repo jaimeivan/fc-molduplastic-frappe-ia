@@ -11,7 +11,7 @@ import frappe
 ROL = "Molduplastic IA User"
 
 LECTURA_TENANT = ["Aseguradora", "Pieza", "Recoleccion", "Taller"]
-PROPIAS = ["IA Conversacion", "IA Reporte"]
+PROPIAS = ["IA Conversacion", "IA Reporte", "IA Indicador"]
 
 
 def execute():

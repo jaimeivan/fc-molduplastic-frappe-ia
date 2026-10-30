@@ -185,11 +185,28 @@ class TestBloqueContexto(FrappeTestCase):
 		self.assertIn("Seguimientos dentro de una conversación", F.SYSTEM_SPEC)
 		self.assertIn("Seguimiento (", F.SYSTEM_EXPLAIN)
 
+	def test_prompt_pide_token_para_la_region_de_un_lugar(self):
+		self.assertIn("REGION_DE: <lugar>", F.SYSTEM_SPEC)
+		self.assertIn("tú no escribes la respuesta", F.SYSTEM_SPEC)
+		self.assertNotIn("usa la misma clave con el texto escrito", F.SYSTEM_SPEC)
+
+	def test_prompt_prohibe_filtrar_o_agrupar_por_aseguradora(self):
+		self.assertIn(
+			'NO pongas\n"aseguradora" en "filters" ni la uses en "group_by"', F.SYSTEM_SPEC
+		)
+		self.assertIn("la app añade el aviso de alcance", F.SYSTEM_SPEC)
+
+	def test_prompt_explain_etiqueta_el_universo(self):
+		self.assertIn('los Datos traen "universo"', F.SYSTEM_EXPLAIN)
+		self.assertIn("Nunca\ninventes ni mezcles datos de otra aseguradora", F.SYSTEM_EXPLAIN)
+
 
 class TestPromptExplain(FrappeTestCase):
 	"""`explain` marca el desglose para que el formato no dependa del criterio del modelo."""
 
-	def _datos_enviados(self, spec, resultado=None, pregunta="muestra las piezas por tipo cdr"):
+	def _datos_enviados(
+		self, spec, resultado=None, pregunta="muestra las piezas por tipo cdr", universo_nombre=None
+	):
 		capturado = {}
 
 		def fake_fallback(cadena, fn):
@@ -203,9 +220,46 @@ class TestPromptExplain(FrappeTestCase):
 		with patch.object(F.frappe, "get_cached_doc", return_value=settings_stub()):
 			with patch.object(F, "_cadena", return_value=[fila_zen()]):
 				with patch.object(F, "_con_fallback", side_effect=fake_fallback):
-					F.explain(pregunta, spec, resultado)
+					F.explain(
+						pregunta, spec, resultado, universo_nombre=universo_nombre
+					)
 		contenido = capturado["mensajes"][-1]["content"]
 		return json.loads(contenido.split("Datos: ", 1)[1])
+
+	def test_explain_manda_el_universo_en_los_datos(self):
+		datos = self._datos_enviados(
+			{"aggregations": [{"alias": "n"}]},
+			resultado={"columnas": ["n"], "filas": [[1]]},
+			pregunta="dame el total",
+			universo_nombre="GNP",
+		)
+		self.assertEqual(datos["universo"], "GNP")
+
+	def test_grupos_sin_ingresadas_no_aparecen_en_la_tabla(self):
+		"""Un grupo que solo tiene rezagadas daría 0.0% por construcción."""
+		spec = {
+			"group_by": ["tipo_carga"],
+			"aggregations": [
+				{"func": "count", "field": "*", "alias": "total"},
+				{"func": "count", "field": "*", "alias": "recolectadas"},
+				{"func": "count", "field": "*", "alias": "inconsistentes_recolectadas"},
+				{"func": "count", "field": "*", "alias": "rezagadas_recolectadas"},
+			],
+		}
+		resultado = {
+			"columnas": [
+				"tipo_carga",
+				"total",
+				"recolectadas",
+				"inconsistentes_recolectadas",
+				"rezagadas_recolectadas",
+			],
+			"filas": [["10", 100, 2, 3, 45], ["13", 0, 0, 0, 7]],
+		}
+		datos = self._datos_enviados(spec, resultado, pregunta="efectividad por tipo CDR")
+		self.assertEqual(len(datos["porcentajes"]), 1)
+		self.assertEqual(datos["porcentajes"][0]["total"], 100)
+		self.assertEqual(datos["porcentajes"][0]["pct"], 50.0)
 
 	def test_tipo_carga_viaja_con_nombre_no_con_id(self):
 		spec = {
@@ -470,6 +524,53 @@ class TestOrdenDeFilas(FrappeTestCase):
 		self.assertEqual(F._ordenar(spec, filas, [])[0], [[40]])
 
 
+class TestListadoSinCifras(FrappeTestCase):
+	""""lista las plazas por región" no muestra el conteo de piezas."""
+
+	def test_detecta_el_listado(self):
+		self.assertTrue(F._es_listado("lista las plazas por region"))
+		self.assertTrue(F._es_listado("Enumera los talleres por región"))
+		self.assertTrue(F._es_listado("dame las plazas por region"))
+		self.assertTrue(F._es_listado("muéstrame los talleres por región"))
+
+	def test_con_medida_no_es_listado(self):
+		self.assertFalse(F._es_listado("lista las piezas por tipo CDR"))
+		self.assertFalse(F._es_listado("lista los 10 talleres con más piezas"))
+		self.assertFalse(F._es_listado("¿cuál es la efectividad por taller?"))
+		self.assertFalse(F._es_listado("¿qué marcas tienen menor efectividad de recolección?"))
+		self.assertFalse(F._es_listado("dame los siniestros de este mes"))
+		self.assertFalse(F._es_listado("dame la recolección del mes"))
+		self.assertFalse(F._es_listado("muéstrame las piezas por marca"))
+
+	def test_quita_la_medida_y_agrupa_la_segunda_dimension(self):
+		spec = {"group_by": ["region_pais", "id_plaza"]}
+		resultado = {
+			"columnas": ["region_pais", "id_plaza", "piezas"],
+			"filas": [
+				["Norte", "MTY", 24],
+				["Norte", "JUAREZ", 6],
+				["CDMX y Área Metropolitana", "CDMX", 8],
+			],
+		}
+		filas, columnas = F._listado_sin_cifras(spec, resultado, resultado["filas"])
+		self.assertEqual(columnas, ["region_pais", "id_plaza"])
+		self.assertEqual(
+			filas,
+			[["Norte", "MTY, JUAREZ"], ["CDMX y Área Metropolitana", "CDMX"]],
+		)
+
+	def test_una_dimension_deja_los_nombres(self):
+		spec = {"group_by": ["id_plaza"]}
+		resultado = {"columnas": ["id_plaza", "piezas"], "filas": [["MTY", 24], ["CDMX", 8]]}
+		filas, columnas = F._listado_sin_cifras(spec, resultado, resultado["filas"])
+		self.assertEqual(columnas, ["id_plaza"])
+		self.assertEqual(filas, [["MTY"], ["CDMX"]])
+
+	def test_prompt_pide_la_tabla_sin_cifras(self):
+		self.assertIn('"sin_cifras": true', F.SYSTEM_EXPLAIN)
+		self.assertIn("Nunca escribas una cifra en este caso", F.SYSTEM_EXPLAIN)
+
+
 class TestPorcentajes(FrappeTestCase):
 	"""La efectividad la divide el código: el modelo solo transcribe el porcentaje."""
 
@@ -501,13 +602,76 @@ class TestPorcentajes(FrappeTestCase):
 		resultado = {"columnas": ["marca", "count"], "filas": [["Nissan", 17]]}
 		self.assertEqual(F._porcentajes({}, resultado), [])
 
+	def test_suma_las_tres_categorias_de_recuperacion(self):
+		"""Efectividad = (recolectadas + inconsistentes + rezagadas) / ingresadas."""
+		spec = {
+			"group_by": ["tipo_carga"],
+			"aggregations": [
+				{"alias": "total"},
+				{"alias": "recolectadas"},
+				{"alias": "inconsistentes_recolectadas"},
+				{"alias": "rezagadas_recolectadas"},
+			],
+		}
+		resultado = {
+			"columnas": [
+				"tipo_carga",
+				"total",
+				"recolectadas",
+				"inconsistentes_recolectadas",
+				"rezagadas_recolectadas",
+			],
+			"filas": [["10", 100, 2, 3, 45]],
+		}
+		salida = F._porcentajes(spec, resultado)[0]
+		self.assertEqual(salida["recuperadas"], 50)
+		self.assertEqual(salida["recolectadas_estrictas"], 2)
+		self.assertEqual(salida["inconsistentes_recolectadas"], 3)
+		self.assertEqual(salida["rezagadas_recolectadas"], 45)
+		self.assertEqual(salida["pct"], 50.0)
+		self.assertNotIn("recolectadas", salida)
+
+	def test_puede_pasar_de_cien_porciento_por_las_rezagadas(self):
+		spec = {
+			"group_by": ["tipo_carga"],
+			"aggregations": [
+				{"alias": "total"},
+				{"alias": "recolectadas"},
+				{"alias": "inconsistentes_recolectadas"},
+				{"alias": "rezagadas_recolectadas"},
+			],
+		}
+		resultado = {
+			"columnas": [
+				"tipo_carga",
+				"total",
+				"recolectadas",
+				"inconsistentes_recolectadas",
+				"rezagadas_recolectadas",
+			],
+			"filas": [["10", 40, 0, 32, 11]],
+		}
+		self.assertEqual(F._porcentajes(spec, resultado)[0]["pct"], 107.5)
+
+	def test_prompt_lleva_la_formula_de_las_tres_categorias(self):
+		self.assertIn('"alias": "rezagadas_recolectadas"', F.SYSTEM_SPEC)
+		self.assertIn("inconsistentes recolectadas + rezagadas", F.SYSTEM_SPEC)
+		self.assertIn("Puede pasar de 100%", F.SYSTEM_SPEC)
+
 	def test_prompt_pide_usar_el_porcentaje_calculado(self):
 		self.assertIn('"porcentajes"', F.SYSTEM_EXPLAIN)
 
+	def test_prompt_llama_recuperadas_a_la_suma(self):
+		self.assertIn('la columna "Recuperadas" de la tabla es esa suma', F.SYSTEM_EXPLAIN)
+		self.assertIn('"Recolectadas" a secas es solo la categoría estricta', F.SYSTEM_EXPLAIN)
+		self.assertNotIn('la columna "Recolectadas"', F.SYSTEM_EXPLAIN)
+
 	def test_prompt_nombra_los_campos_de_cada_dimension(self):
-		"""`plaza` no existe como campo: el prompt tiene que decir `id_plaza`."""
+		"""En Pieza `plaza` no existe como campo: el prompt tiene que decir `id_plaza`."""
 		self.assertIn('"por plaza" →\n["id_plaza"]', F.SYSTEM_SPEC)
-		self.assertNotIn('group_by ["plaza"]', F.SYSTEM_SPEC)
+		self.assertIn('plaza es id_plaza (Link a Taller-Plazas; no\nexiste un campo "plaza")', F.SYSTEM_SPEC)
+		# En Recoleccion sí hay un virtual "plaza" (sale de Recolector-Talleres).
+		self.assertIn('group_by ["plaza"] con el filtro de pendientes', F.SYSTEM_SPEC)
 
 
 class TestResumenEnDinero(FrappeTestCase):
@@ -552,9 +716,72 @@ class TestDireccionPorPregunta(FrappeTestCase):
 class TestPromptComparacion(FrappeTestCase):
 	"""Comparar grupos sin período va al año, y la respuesta cierra con el veredicto."""
 
-	def test_spec_manda_al_anio_en_comparaciones(self):
-		self.assertIn("si la pregunta COMPARA dos grupos", F.SYSTEM_SPEC)
-		self.assertIn("usa el año en curso", F.SYSTEM_SPEC)
+	def test_spec_sin_excepciones_al_mes_actual(self):
+		self.assertIn("Sin excepciones al mes actual", F.SYSTEM_SPEC)
+		self.assertIn("también las comparaciones entre grupos", F.SYSTEM_SPEC)
+		self.assertIn("no cambies el período por tu cuenta", F.SYSTEM_SPEC)
+
+	def test_top_sin_periodo_va_al_mes_actual(self):
+		self.assertIn("también en comparaciones y tops", F.SYSTEM_SPEC)
+
+	def test_spec_mapea_tipo_de_pieza_y_pide_efectividad(self):
+		self.assertIn('"tipo de pieza" o "tipo de autoparte" también es parte_pieza', F.SYSTEM_SPEC)
+		self.assertIn('"¿Qué tipo de pieza se recolecta menos?"', F.SYSTEM_SPEC)
+		self.assertIn('"min_ingresadas": 50', F.SYSTEM_SPEC)
+
+	def test_prompt_explica_recolecciones_pendientes(self):
+		self.assertIn('"id_estatus": ["=", "301"]', F.SYSTEM_SPEC)
+		self.assertIn('"fecha_completado": ["is", "empty"]', F.SYSTEM_SPEC)
+		self.assertIn("**\"Recolecciones pendientes\"** son", F.SYSTEM_SPEC)
+		self.assertIn('"estado": ["=", "CDMX"]', F.SYSTEM_SPEC)
+		self.assertIn("se unifican solos", F.SYSTEM_SPEC)
+		self.assertIn("La plaza de una recolección sale de Recolector-Talleres", F.SYSTEM_SPEC)
+
+	def test_resumen_agrega_recuperadas_y_no_recuperadas(self):
+		self.assertIn("**Recuperadas y no recuperadas**", F.SYSTEM_EXPLAIN)
+		self.assertIn('el campo\n"recuperadas"', F.SYSTEM_EXPLAIN)
+		self.assertIn('"no_recuperadas"', F.SYSTEM_EXPLAIN)
+
+	def test_totales_recuperadas(self):
+		resultado = {
+			"columnas": [
+				"total",
+				"recolectadas",
+				"inconsistentes_recolectadas",
+				"rezagadas_recolectadas",
+			],
+			"filas": [[40, 2, 3, 45]],
+		}
+		self.assertEqual(F.totales_recuperadas(resultado["filas"], resultado), [50])
+
+	def test_prompt_define_no_recuperadas(self):
+		self.assertIn('Definición de NO RECUPERADAS', F.SYSTEM_SPEC)
+		self.assertIn('"no_recolectadas", "inconsistentes_no_recolectadas"', F.SYSTEM_SPEC)
+		self.assertIn('datos traen "no_recuperadas"', F.SYSTEM_EXPLAIN)
+
+	def test_prompt_no_pinta_todo_en_cero(self):
+		self.assertIn("Todos en cero", F.SYSTEM_EXPLAIN)
+		self.assertIn("NO pintes la tabla con los ceros", F.SYSTEM_EXPLAIN)
+
+	def test_no_entregadas_es_no_recolectadas(self):
+		self.assertIn('"no entregadas" —es\nel mismo sinónimo—', F.SYSTEM_SPEC)
+		self.assertIn('"No entregadas" es lo mismo que "no recolectadas"', F.SYSTEM_SPEC)
+
+	def test_submarca_se_traduce_a_tipo(self):
+		self.assertIn('"Submarca" (o "modelo del vehículo") SÍ es el campo', F.SYSTEM_SPEC)
+		self.assertIn('group_by ["tipo"]', F.SYSTEM_SPEC)
+
+	def test_prompt_pide_el_minimo_en_cualquier_efectividad(self):
+		self.assertIn("Aplica a CUALQUIER pregunta de efectividad con dimensión", F.SYSTEM_SPEC)
+		self.assertIn('"min_ingresadas": 500', F.SYSTEM_SPEC)
+
+	def test_explain_responde_con_la_primera_fila(self):
+		self.assertIn("contesta en UNA línea con el primer renglón", F.SYSTEM_EXPLAIN)
+		self.assertIn("No hace falta\nla tabla", F.SYSTEM_EXPLAIN)
+
+	def test_explain_pide_tabla_cuando_el_top_trae_n(self):
+		self.assertIn('top N ("las 5 partes que menos se recolectan"', F.SYSTEM_EXPLAIN)
+		self.assertIn("no es una sola cifra: contesta con la tabla de cinco columnas", F.SYSTEM_EXPLAIN)
 
 	def test_explain_pide_la_frase_de_comparacion(self):
 		self.assertIn("compara dos grupos por efectividad", F.SYSTEM_EXPLAIN)

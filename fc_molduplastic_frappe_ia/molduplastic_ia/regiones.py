@@ -13,6 +13,8 @@ dos codificaciones (la mojibake "MÃ©xico" junto a la correcta "México"), así
 que cada nombre genera sus variantes.
 """
 
+import unicodedata
+
 import frappe
 
 # Las siete regiones acordadas con el dueño.
@@ -287,6 +289,28 @@ def tabla_regiones():
 	return "\n".join(lineas)
 
 
+# Plaza (Link a Taller-Plazas) -> región. El catálogo de plazas solo guarda el
+# nombre y la descripción, y `Pieza.region_pais` es la región del estado del
+# ASEGURADO, no la de la plaza: por eso "plazas de la región X" no se puede
+# resolver con region_pais (mostraba PUE o TEPIC en CDMX). Este mapa sale del
+# mismo ESTADOS aplicado a la ciudad de cada plaza; si una plaza cambia de
+# región, se edita aquí y no en el prompt.
+PLAZAS_POR_REGION = {
+	"Norte": ("MTY", "CHIH", "CHIHF", "SALTILLO", "TORR", "JUAREZ", "REYNOSA"),
+	"CDMX y Área Metropolitana": ("CDMX", "CDMX2", "TOL", "HGO", "MORELOS", "TLAX"),
+	"Occidente": ("GDL", "GDLF", "CUL", "COLIMA", "TEPIC", "MOCHIS", "HERMOSILLO", "MAZ"),
+	"Bajío": ("LEON", "LEONF", "QRO", "AGS", "SLP"),
+	"Centro y Golfo": ("PUE", "VER", "VERF", "OAX", "COATZA"),
+	"Sureste": ("MER", "CAN", "VILLAH", "CHIAPAS", "CAMPECHE"),
+	"Pacífico": ("MORELIA", "ACAP"),
+}
+
+
+def plazas_de_region(region):
+	"""Las plazas que pertenecen a la región, en el orden del mapa."""
+	return list(PLAZAS_POR_REGION.get(region) or ())
+
+
 def expresion_region():
 	"""CASE ... END que devuelve la región o NULL. Cacheada en Redis."""
 	from fc_molduplastic_frappe_ia.molduplastic_ia.query_executor import _col
@@ -303,3 +327,82 @@ def expresion_region():
 	expresion += " END"
 	frappe.cache().set_value(CACHE_KEY, expresion, expires_in_sec=CACHE_TTL)
 	return expresion
+
+# El catálogo del taller escribe CDMX de varias formas. Se canonizan para que
+# filtros y agrupaciones por estado coincidan (decisión del dueño 2026-10-28).
+ESTADOS_SINONIMOS = {
+	"cdmx": "CDMX",
+	"ciudad de mexico": "CDMX",
+	"cd de mexico": "CDMX",
+	"distrito federal": "CDMX",
+}
+
+# Variantes tal como están escritas en Taller.estado (mayúsculas, con y sin
+# acento), para el CASE que las unifica en la columna.
+_VARIANTES_CDMX = (
+	"CDMX",
+	"CIUDAD DE MEXICO",
+	"CIUDAD DE MÉXICO",
+	"CD DE MEXICO",
+	"CD DE MÉXICO",
+	"DISTRITO FEDERAL",
+)
+
+
+def clave_estado(valor):
+	"""Clave de comparación: minúsculas, sin acentos y con espacios simples."""
+	texto = "".join(
+		c
+		for c in unicodedata.normalize("NFD", str(valor or ""))
+		if unicodedata.category(c) != "Mn"
+	).lower()
+	return " ".join(texto.split())
+
+
+def estado_canonico(valor):
+	"""Valor de estado con los sinónimos de CDMX unificados."""
+	if not isinstance(valor, str):
+		return valor
+	return ESTADOS_SINONIMOS.get(clave_estado(valor), valor)
+
+
+def region_de(nombre):
+	"""Región de un estado, alias o ciudad. None si no se conoce.
+
+	Sirve para resolver una pregunta puntual ("¿en qué región está Oaxaca?")
+	sin consultar la BD y sin que el modelo escriba la respuesta.
+	"""
+	if not isinstance(nombre, str):
+		return None
+	clave = clave_estado(nombre)
+	if not clave:
+		return None
+	for origen in (ESTADOS, ALIAS_ESTADO, CIUDADES):
+		for llave, valor in origen.items():
+			if clave_estado(llave) == clave:
+				return valor if origen is ESTADOS else ESTADOS.get(valor)
+	return None
+
+
+def expresion_estado(col):
+	"""CASE que unifica los sinónimos de CDMX en una columna de estado."""
+	valores = ", ".join(frappe.db.escape(v) for v in _VARIANTES_CDMX)
+	return f"CASE WHEN UPPER(TRIM({col})) IN ({valores}) THEN 'CDMX' ELSE {col} END"
+
+
+def expresion_region_de_plaza(plaza):
+	"""Región de una plaza, como subconsulta escalar.
+
+	`plaza` es la expresión SQL de la plaza (en Recoleccion es un campo virtual
+	que sale de Recolector-Talleres). Se resuelve con una tabla derivada de 38
+	filas en vez de un CASE con 38 IN: así la expresión de la plaza se evalúa
+	una sola vez por fila y no una por cada WHEN.
+	"""
+	pares = []
+	for region, plazas in PLAZAS_POR_REGION.items():
+		for p in plazas:
+			pares.append(
+				f"SELECT {frappe.db.escape(p)} AS plaza, {frappe.db.escape(region)} AS region"
+			)
+	mapa = " UNION ALL ".join(pares)
+	return f"(SELECT m.region FROM ({mapa}) m WHERE m.plaza = {plaza})"

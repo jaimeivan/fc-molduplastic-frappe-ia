@@ -8,6 +8,14 @@ import frappe
 
 INICIALES = [
 	"¿Las agencias recolectan mejor que los talleres?",
+	"¿Qué tipo de pieza se recolecta menos?",
+	"¿Cuáles son las 5 partes que menos se recolectan con al menos 100 piezas?",
+	"¿Qué marcas tienen menor efectividad de recolección?",
+	"¿Qué plaza tiene la efectividad más baja en la región Norte?",
+	"muestra la efectividad por plaza de la region",
+	"cuantas recolecciones pendientes hay por region",
+	"¿Cuántas piezas tengo pendientes y cuánto valen?",
+	"¿Qué talleres concentran más piezas no entregadas?",
 ]
 
 

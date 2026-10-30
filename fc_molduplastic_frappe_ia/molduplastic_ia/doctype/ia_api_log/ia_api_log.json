@@ -46,7 +46,7 @@
       "in_list_view": 1,
       "in_standard_filter": 1,
       "label": "Estado",
-      "options": "Éxito\nFallo\nSpec rechazada\nFuera de alcance",
+      "options": "Éxito\nFallo\nSpec rechazada\nFuera de alcance\nRespuesta directa\nSensible",
       "reqd": 1
     },
     {

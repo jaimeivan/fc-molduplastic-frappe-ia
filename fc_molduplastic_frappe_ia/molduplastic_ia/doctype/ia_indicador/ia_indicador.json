@@ -1,0 +1,206 @@
+{
+  "actions": [],
+  "autoname": "hash",
+  "creation": "2026-10-21 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "indicador",
+    "descripcion",
+    "tipo",
+    "fuente",
+    "reporte",
+    "valor_num",
+    "valor_texto",
+    "unidad",
+    "formato",
+    "color",
+    "icono",
+    "spec_json",
+    "columnas_json",
+    "filas_json",
+    "grafico_json",
+    "cobertura_json",
+    "universo",
+    "orden",
+    "visible",
+    "plantilla",
+    "usuario",
+    "aseguradora",
+    "estado",
+    "actualizado"
+  ],
+  "fields": [
+    {
+      "fieldname": "indicador",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Indicador",
+      "reqd": 1
+    },
+    {
+      "fieldname": "descripcion",
+      "fieldtype": "Small Text",
+      "label": "Descripción"
+    },
+    {
+      "default": "KPI",
+      "fieldname": "tipo",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Tipo",
+      "options": "KPI\nTabla\nGráfico"
+    },
+    {
+      "default": "Manual",
+      "fieldname": "fuente",
+      "fieldtype": "Select",
+      "label": "Fuente",
+      "options": "Manual\nReporte"
+    },
+    {
+      "fieldname": "reporte",
+      "fieldtype": "Link",
+      "label": "Reporte",
+      "options": "IA Reporte"
+    },
+    {
+      "fieldname": "valor_num",
+      "fieldtype": "Float",
+      "label": "Valor numérico"
+    },
+    {
+      "fieldname": "valor_texto",
+      "fieldtype": "Data",
+      "label": "Valor de texto"
+    },
+    {
+      "fieldname": "unidad",
+      "fieldtype": "Data",
+      "label": "Unidad"
+    },
+    {
+      "default": "numero",
+      "fieldname": "formato",
+      "fieldtype": "Select",
+      "label": "Formato",
+      "options": "numero\nporcentaje\nmoneda\ntexto"
+    },
+    {
+      "default": "primary",
+      "fieldname": "color",
+      "fieldtype": "Select",
+      "label": "Color",
+      "options": "default\nprimary\nsuccess\nwarning\nerror\ninfo"
+    },
+    {
+      "fieldname": "icono",
+      "fieldtype": "Data",
+      "label": "Icono"
+    },
+    {
+      "fieldname": "spec_json",
+      "fieldtype": "Code",
+      "label": "Query Spec (JSON)",
+      "options": "JSON"
+    },
+    {
+      "fieldname": "columnas_json",
+      "fieldtype": "Code",
+      "label": "Columnas (JSON)",
+      "options": "JSON"
+    },
+    {
+      "fieldname": "filas_json",
+      "fieldtype": "Code",
+      "label": "Filas (JSON)",
+      "options": "JSON"
+    },
+    {
+      "fieldname": "grafico_json",
+      "fieldtype": "Code",
+      "label": "Config de gráfico (JSON)",
+      "options": "JSON"
+    },
+    {
+      "fieldname": "cobertura_json",
+      "fieldtype": "Code",
+      "label": "Cobertura / universo (JSON)",
+      "options": "JSON"
+    },
+    {
+      "fieldname": "universo",
+      "fieldtype": "Int",
+      "label": "Universo (registros en alcance)"
+    },
+    {
+      "default": "0",
+      "fieldname": "orden",
+      "fieldtype": "Int",
+      "label": "Orden"
+    },
+    {
+      "default": "1",
+      "fieldname": "visible",
+      "fieldtype": "Check",
+      "label": "Visible"
+    },
+    {
+      "default": "0",
+      "fieldname": "plantilla",
+      "fieldtype": "Check",
+      "label": "Plantilla"
+    },
+    {
+      "fieldname": "usuario",
+      "fieldtype": "Link",
+      "label": "Usuario",
+      "options": "User",
+      "reqd": 1
+    },
+    {
+      "fieldname": "aseguradora",
+      "fieldtype": "Link",
+      "label": "Aseguradora",
+      "options": "Aseguradora"
+    },
+    {
+      "default": "Activo",
+      "fieldname": "estado",
+      "fieldtype": "Select",
+      "label": "Estado",
+      "options": "Activo\nEliminado"
+    },
+    {
+      "fieldname": "actualizado",
+      "fieldtype": "Datetime",
+      "label": "Actualizado",
+      "read_only": 1
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "links": [],
+  "modified": "2026-10-21 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Molduplastic IA",
+  "name": "IA Indicador",
+  "naming_rule": "Random",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+    }
+  ],
+  "sort_field": "orden",
+  "sort_order": "ASC",
+  "title_field": "indicador"
+}

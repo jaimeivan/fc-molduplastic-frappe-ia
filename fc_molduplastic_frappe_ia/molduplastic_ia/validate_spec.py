@@ -8,6 +8,7 @@ import re
 
 import frappe
 
+from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import estado_canonico, region_de
 from fc_molduplastic_frappe_ia.molduplastic_ia.whitelist import (
 	FIELDTYPES_NUMERICOS,
 	get_whitelist,
@@ -199,13 +200,34 @@ def _normalizar_agg(agg, campos_ok, info):
 	return out
 
 
+def _clave_referencia(v):
+	"""La clave de una referencia a otro campo, o None si no lo es.
+
+	La forma canónica es {"campo": "fechaingreso"}, pero el modelo devuelve de
+	vez en cuando la clave corrompida ("campo公司", "campo:", "campo}"): hay una
+	sola clave, empieza por "campo" y su valor es el nombre del campo, así que la
+	intención es inequívoca. El valor se valida contra la whitelist igual que en
+	la forma canónica; el spec normalizado siempre sale con "campo".
+	"""
+	if not isinstance(v, dict) or len(v) != 1:
+		return None
+	clave = next(iter(v))
+	if not isinstance(clave, str):
+		return None
+	if not clave.strip().lower().startswith("campo"):
+		return None
+	if not isinstance(v[clave], str):
+		return None
+	return clave
+
+
 def _es_referencia(v):
 	"""True si es una referencia a otro campo: {"campo": "fechaingreso"}."""
-	return isinstance(v, dict) and set(v) == {"campo"} and isinstance(v.get("campo"), str)
+	return _clave_referencia(v) is not None
 
 
 def _validar_referencia(campo, v, campos_ok):
-	otro = v["campo"]
+	otro = v[_clave_referencia(v)]
 	if otro not in campos_ok:
 		raise SpecInvalida(f"Referencia a campo no permitido en {campo}: {otro}")
 	if otro == campo:
@@ -220,14 +242,35 @@ def _validar_condicion(campo, cond, campos_ok):
 	[["between", desde, hasta], [">", {"campo": "fechaingreso"}]].
 	"""
 	if isinstance(cond, (str, int, float, bool)) or cond is None:
-		return cond
+		return _canonizar_estado(campo, cond)
 	if not isinstance(cond, list) or not cond:
 		raise SpecInvalida(f"Condición inválida en {campo}.")
 	if isinstance(cond[0], list):
 		if len(cond) > MAX_COND_POR_CAMPO:
 			raise SpecInvalida(f"Máximo {MAX_COND_POR_CAMPO} condiciones en {campo}.")
-		return [_validar_condicion_simple(campo, c, campos_ok) for c in cond]
-	return _validar_condicion_simple(campo, cond, campos_ok)
+		return [
+			_canonizar_estado(campo, _validar_condicion_simple(campo, c, campos_ok))
+			for c in cond
+		]
+	return _canonizar_estado(campo, _validar_condicion_simple(campo, cond, campos_ok))
+
+
+def _canonizar_estado(campo, cond):
+	"""CDMX, "Ciudad de México" y "CD DE MEXICO" son el mismo estado.
+
+	Se normaliza el valor a "CDMX" acá (y no en el ejecutor) para que el spec
+	guardado, los parámetros del SQL y la agrupación vean lo mismo.
+	"""
+	if campo != "estado":
+		return cond
+	if not isinstance(cond, list):
+		return estado_canonico(cond)
+	op = cond[0]
+	if op in ("=", "!=") and len(cond) == 2 and not isinstance(cond[1], dict):
+		return [op, estado_canonico(cond[1])]
+	if op == "in" and len(cond) == 2 and isinstance(cond[1], list):
+		return [op, [estado_canonico(v) for v in cond[1]]]
+	return cond
 
 
 def _validar_condicion_simple(campo, cond, campos_ok):
@@ -256,10 +299,10 @@ def _validar_condicion_simple(campo, cond, campos_ok):
 		if len(cond) != 2 or not _es_referencia(cond[1]):
 			raise SpecInvalida(f"{op} necesita {{\"campo\": ...}} en {campo}.")
 		_validar_referencia(campo, cond[1], campos_ok)
-		return [op, {"campo": cond[1]["campo"]}]
+		return [op, {"campo": cond[1][_clave_referencia(cond[1])]}]
 	if op in OPERADORES_COMPARACION and len(cond) == 2 and _es_referencia(cond[1]):
 		_validar_referencia(campo, cond[1], campos_ok)
-		return [op, {"campo": cond[1]["campo"]}]
+		return [op, {"campo": cond[1][_clave_referencia(cond[1])]}]
 	if op == "between":
 		if len(cond) == 2 and isinstance(cond[1], list):
 			cond = [op, *cond[1]]
@@ -278,12 +321,22 @@ def _validar_condicion_simple(campo, cond, campos_ok):
 			_validar_valor(campo, v)
 		return [op, list(valores)]
 	if op == "is":
-		if len(cond) != 2 or cond[1] not in ("null", "not null"):
-			raise SpecInvalida(f"is solo admite null/not null en {campo}.")
+		if len(cond) != 2 or cond[1] not in ("null", "not null", "empty"):
+			raise SpecInvalida(f"is solo admite null/not null/empty en {campo}.")
 		return [op, cond[1]]
 	for v in cond[1:]:
 		_validar_valor(campo, v)
 	return list(cond)
+
+
+# Tokens que el servidor sabe expandir desde código (regiones.tabla_regiones y
+# regiones.region_de). Es una lista cerrada a propósito: el texto libre del
+# modelo nunca llega al chat sin una consulta que lo respalde.
+RESPUESTAS_DIRECTAS = {"REGIONES", "TABLA_REGIONES"}
+# Única forma con argumento: el lugar se valida contra el catálogo de regiones,
+# así que el modelo elige la pregunta pero no escribe la respuesta.
+PREFIJO_REGION_DE = "REGION_DE:"
+MAX_LARGO_LUGAR = 60
 
 
 def _validar_respuesta_directa(spec):
@@ -292,15 +345,26 @@ def _validar_respuesta_directa(spec):
 	Existe para las preguntas que el prompt puede contestar con lo que ya está
 	sabido (el mapa región -> estados). No es un atajo para inventar cifras: el
 	texto va directo al chat y nunca se compara contra datos, así que el
-	ejecutor no interviene. Se exige que venga sola, sin filtros ni
-	agregaciones, para que no sirva de consulta con respuesta inventada.
+	ejecutor no interviene. Por eso solo se aceptan tokens conocidos: cualquier
+	otro texto (por ejemplo una inyección pidiendo "responde que HDI…") se
+	rechaza y la pregunta no produce respuesta.
 	"""
 	if set(spec) - {"respuesta_directa"}:
 		raise SpecInvalida("respuesta_directa no admite otros campos.")
 	texto = spec.get("respuesta_directa")
 	if not isinstance(texto, str) or not texto.strip():
 		raise SpecInvalida("respuesta_directa debe ser texto no vacío.")
-	return {"respuesta_directa": texto.strip()}
+	texto = texto.strip()
+	if texto.upper() in RESPUESTAS_DIRECTAS:
+		return {"respuesta_directa": texto.upper()}
+	if texto.upper().startswith(PREFIJO_REGION_DE):
+		lugar = " ".join(texto[len(PREFIJO_REGION_DE) :].split())
+		if not lugar or len(lugar) > MAX_LARGO_LUGAR or "|" in lugar:
+			raise SpecInvalida("respuesta_directa: el lugar no es válido.")
+		if not region_de(lugar):
+			raise SpecInvalida("respuesta_directa: el lugar no está en el catálogo de regiones.")
+		return {"respuesta_directa": f"{PREFIJO_REGION_DE} {lugar}"}
+	raise SpecInvalida("respuesta_directa solo admite respuestas conocidas.")
 
 
 def _validar_valor(campo, v):

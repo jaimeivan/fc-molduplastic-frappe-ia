@@ -18,7 +18,29 @@ VIRTUALES = {
 			"fieldtype": "Virtual",
 			"origen": "estadolocalidad",
 		}
-	}
+	},
+	"Recoleccion": {
+		# El estado es del taller asignado (Recoleccion no lo guarda): se
+		# resuelve con una subconsulta sobre Taller.estado.
+		"estado": {
+			"label": "Estado del taller",
+			"fieldtype": "Virtual",
+			"origen": "id_taller",
+		},
+		# La plaza sale de Recolector-Talleres (id_taller_plaza), por el par
+		# taller + recolector y con respaldo solo por taller.
+		"plaza": {
+			"label": "Plaza",
+			"fieldtype": "Virtual",
+			"origen": "id_taller",
+		},
+		# La región es la de la plaza (mapa PLAZAS_POR_REGION).
+		"region": {
+			"label": "Región de la plaza",
+			"fieldtype": "Virtual",
+			"origen": "plaza",
+		},
+	},
 }
 
 # Fieldtypes que nunca salen al LLM ni entran en specs (adjuntos, tablas, HTML...).
