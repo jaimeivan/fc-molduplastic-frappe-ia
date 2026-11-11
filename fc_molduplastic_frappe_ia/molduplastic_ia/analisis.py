@@ -18,6 +18,18 @@ class TiempoAgotado(Exception):
 	"""El presupuesto de tiempo del análisis se agotó antes de terminar."""
 
 
+class TiempoPrevisto(TiempoAgotado):
+	"""La siguiente consulta no alcanzaría: se detiene antes de empezarla.
+
+	`segundos` es el tiempo que se estima que tardará (la mayor duración observada
+	en esta respuesta, o la de la consulta principal).
+	"""
+
+	def __init__(self, segundos):
+		super().__init__(f"Se preveía una consulta de {segundos:.0f} s.")
+		self.segundos = segundos
+
+
 def porcentaje(parte, total):
 	if parte is None or not total:
 		return None

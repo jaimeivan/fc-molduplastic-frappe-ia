@@ -58,10 +58,10 @@ Vocabulario registrado en el prompt: CDR=taller; **"no recolectadas en periodo" 
 
 ## Pendiente (decisiones del dueño)
 - Cargar API keys de DeepSeek/GLM en `Molduplastic IA Settings`; sin keys, `ask()` responde "servicio no disponible" (verificado en tests con mocks).
-- **Decisiones del dueño para el análisis (2026-11-10); fases 0, 1 y 2 implementadas (ver "Análisis de respuestas"):**
+- **Decisiones del dueño para el análisis (2026-11-10); fases 0, 1, 2 y 3 implementadas (ver "Análisis de respuestas"):**
   - Modo de respuesta (`Breve` / `Analítico`) solo en configuración del Asistente IA, nunca desde el cliente. Global + excepciones por intención; por defecto `Breve`.
   - Lectura analítica: primero por LLM; si el LLM falla, agota tiempo o no pasa la verificación de cifras, se usa plantilla de código.
-  - Si el análisis excede el presupuesto de tiempo, se entrega la respuesta breve con la nota: "El análisis completo tardó demasiado para este período. Para verlo, reduce el período (por ejemplo, a un mes) o acota una dimensión." Se registra en `IA API Log`.
+  - Si el análisis excede el presupuesto de tiempo (ahora 120 s), se entrega la respuesta breve con la nota de tiempo y, si se prevé que no alcanza, un aviso antes de empezar la consulta. Se registra en `IA API Log`.
   - Objetivo de efectividad (75 %) en configuración, no en código. La constante `OBJETIVO_EFECTIVIDAD` se elimina al migrar.
   - Mínimo de 50 piezas: aplica solo a hallazgos de porcentajes (efectividad, no entregadas, pendientes, no localizadas por taller), no a conteos ni listados.
   - Glosario de negocio: lo valida el administrador del Asistente IA. Entradas en `Borrador` / `Validado`; solo las `Validado` se inyectan en prompts.
@@ -719,4 +719,23 @@ Tests: `tests/test_analisis.py` (modo, objetivo, validación, glosario, timeout,
 - `pruebas_asistente.csv`: 11 preguntas reales con el LLM configurado (`origen=evidencia_real`, `tipo_llm=real`) más el inventario estático de las pruebas que preguntan al asistente. Regenerar: `bench --site <site> execute fc_molduplastic_frappe_ia.molduplastic_ia.tests.evidencia.generar` (gasta tokens reales).
 - `pruebas_ejecutadas.csv`: cada llamada a `ask()` que hacen las pruebas, con su respuesta y su origen medido durante la corrida (`simulada` si el LLM estaba parcheado; `real` si escribió consumo en `IA API Log`; `sin_llm` si la respuesta la armó el código). Generar: `MOLDUPLASTIC_EVIDENCIA=1 bench --site <site> run-tests --app fc_molduplastic_frappe_ia` (el hook está en `tests/__init__.py` y no cambia la corrida normal).
 - Hoy ninguna prueba automática contesta con el LLM real: todas las llamadas que lo tocan usan mocks.
+
+## Fase 3: presupuesto con aviso, verificación de cifras, playbooks (2026-11-11)
+
+**Presupuesto de tiempo: 120 s (doble).** `presupuesto_analisis_seg` (máximo 120, parche `subir_presupuesto_analisis` solo si sigue en 60). Se cuenta desde que llega la pregunta. El análisis y la lectura se detienen en `inicio + presupuesto − RESERVA_RESPALDO_SEG (35 s)`: esa reserva es para la respuesta breve de respaldo, que tiene su propia llamada y no puede pasar de los 120 s del proxy. La respuesta de respaldo recibe como límite `inicio + presupuesto`.
+
+**Aviso de tiempo (dos casos).**
+- *Va a llevar demasiado* (`TiempoPrevisto`): antes de cada consulta, `_Presupuesto.verificar()` estima su duración con la mayor observada en la respuesta (al inicio, la de la consulta principal). Si no cabe, no la empieza y muestra `NOTA_TIEMPO_PREVISTO` con los segundos estimados.
+- *Está llevando demasiado* (`TiempoAgotado` / `LLMTiempoAgotado`): el presupuesto se agota durante el análisis o la llamada. Muestra `NOTA_TIEMPO_ANALISIS`. Si tampoco alcanza para la breve, muestra `NOTA_SIN_TIEMPO` (la tabla del servidor sigue saliendo).
+- Límite conocido: una consulta en curso no se interrumpe. Si la estimación falla (rangos largos: la consulta anual de efectividad tardó más de lo previsto en GNP), la respuesta se alarga hasta ~120 s. El aviso y la reserva lo acotan, pero no lo eliminan.
+
+**Verificación de cifras (`verificacion.py`, pura).** Cada número de la lectura analítica debe estar en los Datos (`datos`, `analisis`, `hallazgos`, título y período). Tolerancia de redondeo: 0.051 o 0.05% del valor. Orden de corrección: aprobada → reintento con `correccion` (el prompt nombra las cifras que no están) → recorte línea por línea (frases; renglones de tabla completos; se conserva el encabezado de dos líneas) → "Degradada": solo título y período, que arma el código. Nunca se devuelve una cifra que no esté en los Datos. El veredicto y lo quitado quedan en `IA API Log` (`verificacion`, y el detalle en `error`). Settings: `verificacion_cifras` (activa por defecto). **En modo breve no se modifica la respuesta**: solo se registra `Con cifras sin respaldo` o `Aprobada`.
+
+**Preguntas sugeridas (`playbooks.py`).** Registro por tipo de análisis (`efectividad`, `conteo`) con sus preguntas (máximo 3). Salen del playbook, nunca del modelo; `ask()` las devuelve en `preguntas_sugeridas` solo en modo analítico, con análisis, sin tiempo agotado y si `preguntas_sugeridas_activas` está activo. En el chat son botones que llaman a `enviarPregunta` (pasan por todos los controles). Test: cada pregunta cae en la familia efectividad (`mezcla_volumen_efectividad` cuenta como familia). Los conteos no tienen sugeridas porque sus preguntas no caen en una intención propia.
+
+**Evaluación de calidad.** `evaluacion/preguntas_evaluacion.csv` (12 preguntas, columnas para revisor: `analiza`, `sugiere_con_sustento`, `inventa_cifras`) y `evaluacion/LEEME.md`. No se corre sola.
+
+**Evidencia real (2026-11-11, LLM real, corrida final).** `pruebas_asistente.csv`: efectividad mensual analítica → verificación `Aprobada`, 3 sugeridas; por región y por taller → aviso de tiempo previsto (34 s); conteo por marca → `Reintentada` (corrigió la cifra 47); breve → `Con cifras sin respaldo` en 2 casos (la breve calcula "55.0 puntos" que no está en Datos). `pruebas_ejecutadas.csv`: 57 llamadas de la suite, 55 simuladas y 2 sin LLM.
+
+**Pendiente.** Probar el chat en navegador (los botones solo tienen `node --check`). La verificación no cubre cifras correctas escritas con otro significado (una cifra que coincide por casualidad). Las estimaciones de rangos largos se quedan cortas: medir antes de activar el modo analítico para periodos anuales.
 

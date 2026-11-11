@@ -1,0 +1,13 @@
+id,intencion,pregunta,que_se_espera,analiza,sugiere_con_sustento,inventa_cifras,revisor,fecha,notas
+E01,efectividad,¿cuál es la efectividad de septiembre?,Cifra con objetivo y comparación contra el período anterior.,,,,,,
+E02,efectividad,efectividad por taller en septiembre,Tabla por taller; lectura con mejor y peor grupo sin inventar causas.,,,,,,
+E03,efectividad,efectividad por región en septiembre,Tabla por región; lectura de la brecha contra el objetivo.,,,,,,
+E04,efectividad,¿qué tipo de pieza se recolecta menos?,Una fila con su efectividad y el corte de ingresadas.,,,,,,
+E05,efectividad,¿cómo vamos contra la meta de efectividad este mes?,Brecha en puntos contra el objetivo configurado.,,,,,,
+E06,efectividad,¿qué estados tienen mucho volumen pero baja efectividad?,Lista con criterio explícito; sin inventar causas.,,,,,,
+E07,no_recolectadas,¿qué talleres concentran más piezas no entregadas en septiembre?,Ranking y concentración calculada; sin causas no dichas en los datos.,,,,,,
+E08,no_recolectadas,porcentaje de piezas no entregadas con respecto a ingresadas en septiembre,Porcentaje sobre ingresadas tal como viene en los datos.,,,,,,
+E09,conteo,piezas por marca en septiembre,Tabla; sin frases sobre comparativos que no existen.,,,,,,
+E10,conteo,¿cuántas piezas ingresaron en septiembre?,Una cifra en una línea.,,,,,,
+E11,conteo,piezas por taller en septiembre,Tabla; concentración solo si aporta.,,,,,,
+E12,seguimiento,y por región?,Repite la lógica del turno anterior con la dimensión nueva.,,,,,,

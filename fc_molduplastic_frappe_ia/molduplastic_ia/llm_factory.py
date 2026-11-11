@@ -1601,6 +1601,7 @@ def explain(
 	intencion=None,
 	deadline=None,
 	analisis=None,
+	correccion=None,
 ):
 	"""Genera la explicación conversacional. Devuelve (texto, info_log).
 
@@ -1766,6 +1767,17 @@ def explain(
 	glosario = _bloque_glosario(intencion) if analitico else ""
 	if glosario:
 		mensajes.append({"role": "system", "content": glosario})
+	if correccion:
+		# Reintento tras la verificación de cifras: se nombran las cifras que no
+		# estaban en los Datos para que el modelo las quite, no las cambie.
+		mensajes.append({
+			"role": "system",
+			"content": (
+				"Corrección obligatoria: tu respuesta anterior citó cifras que NO están en los "
+				f"Datos: {', '.join(f'{c:g}' for c in correccion)}. Vuelve a redactarla usando "
+				"solo cifras de los Datos; si una cifra no está, no la escribas."
+			),
+		})
 	mensajes.append(
 		{
 			"role": "user",

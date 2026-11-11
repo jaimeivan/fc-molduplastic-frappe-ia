@@ -133,7 +133,7 @@ class TestModoDeRespuesta(ConfigMixin, FrappeTestCase):
 
 	def test_objetivo_y_presupuesto_dentro_de_rango(self):
 		for campos in ({"objetivo_efectividad": 0}, {"objetivo_efectividad": 101},
-			{"presupuesto_analisis_seg": 61}, {"presupuesto_analisis_seg": 4}):
+			{"presupuesto_analisis_seg": 121}, {"presupuesto_analisis_seg": 4}):
 			with self.subTest(campos=campos):
 				s = frappe.get_doc(SETTINGS)
 				for k, v in campos.items():

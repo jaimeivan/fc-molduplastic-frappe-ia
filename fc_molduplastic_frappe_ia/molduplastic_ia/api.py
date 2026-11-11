@@ -32,7 +32,9 @@ from fc_molduplastic_frappe_ia.molduplastic_ia.permissions import (
 )
 from fc_molduplastic_frappe_ia.molduplastic_ia import hallazgos as _hallazgos
 from fc_molduplastic_frappe_ia.molduplastic_ia import analisis as _calc
-from fc_molduplastic_frappe_ia.molduplastic_ia.analisis import TiempoAgotado
+from fc_molduplastic_frappe_ia.molduplastic_ia.analisis import TiempoAgotado, TiempoPrevisto
+from fc_molduplastic_frappe_ia.molduplastic_ia import playbooks as _playbooks
+from fc_molduplastic_frappe_ia.molduplastic_ia import verificacion as _verificacion
 from fc_molduplastic_frappe_ia.molduplastic_ia.intencion import clasificar
 from fc_molduplastic_frappe_ia.molduplastic_ia.query_executor import ejecutar
 from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import (
@@ -6531,6 +6533,7 @@ def _log_llamada(
 			"consultas_complementarias": info.get("consultas_complementarias") or 0,
 			"latencia_analisis_ms": info.get("latencia_analisis_ms") or 0,
 			"hallazgos": info.get("hallazgos") or "",
+			"verificacion": info.get("verificacion") or "",
 		}
 	)
 	doc.insert(ignore_permissions=True)
@@ -6698,10 +6701,53 @@ def _modo_de_respuesta(intencion):
 	return s.modo_respuesta if s.modo_respuesta in MODOS_RESPUESTA else "Breve"
 
 
+# El proxy corta a los 120 s. La respuesta breve de respaldo necesita su propia
+# llamada al modelo: el análisis deja este margen libre.
+RESERVA_RESPALDO_SEG = 35
+NOTA_TIEMPO_PREVISTO = (
+	"Esta consulta va a tardar unos {segundos} s y el análisis completo no cabe en el "
+	"tiempo disponible. Reduce el período (por ejemplo, a un mes) o acota una dimensión "
+	"y vuelve a preguntar."
+)
+NOTA_SIN_TIEMPO = (
+	"No alcanzó el tiempo para redactar la respuesta. Reduce el período o acota una "
+	"dimensión y vuelve a preguntar."
+)
+
+
 def _presupuesto_analisis_seg():
-	"""Segundos para la respuesta analítica (acotado por la validación de Settings)."""
+	"""Segundos totales para la respuesta analítica, desde que llega la pregunta."""
 	s = frappe.get_cached_doc("Molduplastic IA Settings")
-	return min(max(int(s.presupuesto_analisis_seg or 60), 5), 60)
+	return min(max(int(s.presupuesto_analisis_seg or 120), 5), 120)
+
+
+class _Presupuesto:
+	"""Tiempo del análisis: se revisa antes de cada consulta y se mide cada una.
+
+	Si la siguiente consulta no alcanza (según la mayor duración observada, o la
+	de la consulta principal al empezar), se detiene antes de empezarla: es el
+	aviso de "va a llevar demasiado". Una consulta en curso no se interrumpe.
+	"""
+
+	def __init__(self, limite, estimado=0.0):
+		self.limite = limite
+		self.estimado = float(estimado or 0.0)
+		self.observados = []
+
+	def verificar(self):
+		ahora = time.time()
+		if ahora >= self.limite:
+			raise TiempoAgotado("Se agotó el presupuesto de tiempo del análisis.")
+		previsto = max([self.estimado] + self.observados)
+		if previsto and ahora + previsto > self.limite:
+			raise TiempoPrevisto(previsto)
+
+	def medir(self, consulta):
+		inicio = time.time()
+		try:
+			return consulta()
+		finally:
+			self.observados.append(time.time() - inicio)
 
 
 def _config_analisis():
@@ -6716,10 +6762,17 @@ def _config_analisis():
 	}
 
 
-def _verificar_tiempo(deadline):
-	"""Corta el análisis entre consultas: una consulta en curso no se interrumpe."""
-	if deadline is not None and time.time() >= deadline:
-		raise TiempoAgotado("Se agotó el presupuesto de tiempo del análisis.")
+def _verificar_tiempo(presupuesto):
+	"""Corta el análisis antes de la siguiente consulta (presupuesto None = sin límite)."""
+	if presupuesto is not None:
+		presupuesto.verificar()
+
+
+def _ejecutar_medido(spec, user, alcance, presupuesto):
+	"""`ejecutar` que alimenta la predicción del presupuesto con su duración real."""
+	if presupuesto is None:
+		return ejecutar(spec, user, alcance=alcance)
+	return presupuesto.medir(lambda: ejecutar(spec, user, alcance=alcance))
 
 
 def _inicio_de_datos(universo):
@@ -6765,7 +6818,7 @@ def _medir_efectividad(filtros, rango, user, alcance, deadline, consultas):
 		"render_chart": None,
 		"out_of_scope": False,
 	})
-	resultado = ejecutar(spec, user, alcance=alcance)
+	resultado = _ejecutar_medido(spec, user, alcance, deadline)
 	consultas.append(spec)
 	filas = _porcentajes(spec, resultado)
 	if not filas:
@@ -6792,7 +6845,7 @@ def _medir_grupos_efectividad(filtros, rango, dims, user, alcance, deadline, con
 		"render_chart": None,
 		"out_of_scope": False,
 	})
-	resultado = ejecutar(spec, user, alcance=alcance)
+	resultado = _ejecutar_medido(spec, user, alcance, deadline)
 	consultas.append(spec)
 	return _porcentajes(spec, resultado)
 
@@ -6920,7 +6973,7 @@ def _calcular_conteo(spec, resultado, user, alcance, deadline, consultas):
 		"render_chart": None,
 		"out_of_scope": False,
 	})
-	total_res = ejecutar(total_spec, user, alcance=alcance)
+	total_res = _ejecutar_medido(total_spec, user, alcance, deadline)
 	consultas.append(total_spec)
 	total = (total_res.get("filas") or [[0]])[0][0] or 0
 	return {
@@ -6962,7 +7015,7 @@ def _calcular_analisis(spec, resultado, universo, user, alcance, deadline):
 	return analisis
 
 
-def _analisis_completo(spec, resultado, universo, user, alcance, deadline):
+def _analisis_completo(spec, resultado, universo, user, alcance, presupuesto):
 	"""Análisis + hallazgos + sugerencias para el modo analítico.
 
 	Un error inesperado en el análisis no tumba la respuesta: se registra y la
@@ -6971,7 +7024,7 @@ def _analisis_completo(spec, resultado, universo, user, alcance, deadline):
 	"""
 	inicio = time.time()
 	try:
-		analisis = _calcular_analisis(spec, resultado, universo, user, alcance, deadline)
+		analisis = _calcular_analisis(spec, resultado, universo, user, alcance, presupuesto)
 	except TiempoAgotado:
 		raise
 	except Exception:
@@ -6993,6 +7046,69 @@ def _analisis_completo(spec, resultado, universo, user, alcance, deadline):
 		"consultas": analisis["consultas"],
 		"latencia_ms": int((time.time() - inicio) * 1000),
 	}
+
+
+def _encabezado_de(argumentos):
+	"""Título y período que arma el código: lo que queda si la lectura se quita."""
+	return "\n\n".join(
+		parte for parte in (argumentos.get("titulo_texto"), argumentos.get("periodo_texto")) if parte
+	)
+
+
+def _verificacion_breve(texto, info_exp, argumentos):
+	"""Solo registro: la respuesta breve no cambia, pero queda constancia de sus cifras."""
+	datos = info_exp.get("datos") or {}
+	permitidas = _verificacion.cifras_permitidas(
+		datos, argumentos.get("periodo_texto"), argumentos.get("titulo_texto")
+	)
+	return "Con cifras sin respaldo" if _verificacion.sin_respaldo(texto, permitidas) else "Aprobada"
+
+
+def _verificar_lectura(texto, info_exp, pregunta, spec, resultado, argumentos, intencion, pack, presupuesto):
+	"""Cifras de la lectura analítica contra los Datos. Devuelve (texto, veredicto, quitados).
+
+	Orden: aprobada → reintento con corrección (si hay tiempo) → recorte de las
+	frases con cifras sin respaldo → sin lectura (solo título y período, que arma
+	el código). Nunca se devuelve una cifra que no esté en los Datos.
+	"""
+	if not frappe.get_cached_doc("Molduplastic IA Settings").verificacion_cifras:
+		return texto, "Sin verificar", []
+	permitidas = _verificacion.cifras_permitidas(
+		info_exp.get("datos") or {}, argumentos.get("periodo_texto"), argumentos.get("titulo_texto")
+	)
+	faltan = _verificacion.sin_respaldo(texto, permitidas)
+	if not faltan:
+		return texto, "Aprobada", []
+	try:
+		_verificar_tiempo(presupuesto)
+		texto2, info2 = explain(
+			pregunta, spec, resultado, **argumentos, modo="Analítico", intencion=intencion,
+			deadline=presupuesto.limite, analisis=pack, correccion=faltan,
+		)
+		permitidas2 = _verificacion.cifras_permitidas(
+			info2.get("datos") or {}, argumentos.get("periodo_texto"), argumentos.get("titulo_texto")
+		)
+		faltan2 = _verificacion.sin_respaldo(texto2, permitidas2)
+		if not faltan2:
+			return texto2, "Reintentada", [f"cifras corregidas en el reintento: {', '.join(f'{c:g}' for c in faltan)}"]
+		# Si el reintento también falla, se recorta el texto con menos cifras malas.
+		if len(faltan2) < len(faltan):
+			texto = texto2
+	except (TiempoAgotado, LLMConfigError, LLMProviderError):
+		pass
+	recortado, quitados = _verificacion.recortar(texto, permitidas)
+	if recortado and not _verificacion.sin_respaldo(recortado, permitidas):
+		return recortado, "Recortada", quitados
+	return _encabezado_de(argumentos), "Degradada", quitados
+
+
+def _preguntas_sugeridas(pack, modo, analisis_omitido):
+	"""Botones de seguimiento: solo en modo analítico, con análisis y si está activado."""
+	if modo != "Analítico" or analisis_omitido or not pack:
+		return []
+	if not frappe.get_cached_doc("Molduplastic IA Settings").preguntas_sugeridas_activas:
+		return []
+	return _playbooks.preguntas_para(pack["analisis"]["tipo"])
 
 
 def _metricas_analisis(pack):
@@ -7096,6 +7212,7 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		universo = propias[0]
 		aseguradora_log = propias[0]
 	consulta_id = frappe.generate_hash(length=10)
+	inicio_ask = time.time()
 
 	# Datos sensibles: credenciales, cuentas/permisos y catálogo de
 	# aseguradoras. Regla de servidor, antes del LLM: no cuesta tokens y no
@@ -7264,7 +7381,9 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		}
 
 	try:
+		inicio_principal = time.time()
 		resultado = ejecutar(spec, user, alcance=alcance)
+		duracion_principal = time.time() - inicio_principal
 	except SpecInvalida as e:
 		_log_llamada(
 			info, "generate_spec", "Spec rechazada", consulta_id, user, aseguradora_log, str(e),
@@ -7347,6 +7466,8 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	info_exp = {}
 	explicacion = ""
 	analisis_omitido = False
+	nota_analisis = ""
+	pack = None
 	if explicacion_en_codigo:
 		_log_llamada(
 			{"modo": "Código", "intencion": intencion}, "explain", "Éxito", consulta_id,
@@ -7361,44 +7482,77 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		)
 		explicado = False
 		if modo_pedido == "Analítico":
-			# Presupuesto de tiempo compartido por el análisis y la llamada al
-			# modelo. Si no alcanza, se entrega la respuesta breve con una nota
-			# (decisión del dueño): nada parcial.
-			deadline = time.time() + _presupuesto_analisis_seg()
+			# Presupuesto total desde que llega la pregunta; la reserva deja tiempo
+			# para la respuesta breve de respaldo dentro de los 120 s del proxy.
+			presupuesto = _Presupuesto(
+				limite=inicio_ask + _presupuesto_analisis_seg() - RESERVA_RESPALDO_SEG,
+				estimado=duracion_principal,
+			)
 			try:
-				pack = _analisis_completo(spec, resultado, universo, user, alcance, deadline)
+				pack = _analisis_completo(spec, resultado, universo, user, alcance, presupuesto)
 				explicacion, info_exp = explain(
 					pregunta_det, spec, resultado, **argumentos,
 					modo="Analítico", intencion=intencion,
-					deadline=deadline, analisis=pack,
+					deadline=presupuesto.limite, analisis=pack,
 				)
 				info_exp.update(_metricas_analisis(pack))
+				explicacion, info_exp["verificacion"], quitados = _verificar_lectura(
+					explicacion, info_exp, pregunta_det, spec, resultado, argumentos,
+					intencion, pack, presupuesto,
+				)
 				_log_llamada(
 					info_exp, "explain", "Éxito", consulta_id, user, aseguradora_log,
+					# Lo que se quitó (o "") queda a la vista en el registro.
+					error=("Verificación: " + " || ".join(quitados)) if quitados else "",
 					historial=historial,
 				)
 				explicado = True
+			except TiempoPrevisto as e:
+				analisis_omitido = True
+				pack = None
+				nota_analisis = NOTA_TIEMPO_PREVISTO.format(segundos=round(e.segundos))
+				_log_llamada(
+					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
+					historial=historial, modo="Analítico", intencion=intencion,
+					analisis_omitido=True,
+				)
 			except (TiempoAgotado, LLMTiempoAgotado) as e:
 				analisis_omitido = True
+				pack = None
+				nota_analisis = NOTA_TIEMPO_ANALISIS
 				_log_llamada(
 					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
 					historial=historial, modo="Analítico", intencion=intencion,
 					analisis_omitido=True,
 				)
 			except (LLMConfigError, LLMProviderError) as e:
+				pack = None
 				_log_llamada(
 					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
 					historial=historial, modo="Analítico", intencion=intencion,
 				)
 		if not explicado:
+			# La respuesta breve de respaldo tampoco puede pasar de los 120 s del proxy
+			# cuando viene de un análisis que se quedó sin tiempo.
+			limite_breve = (
+				inicio_ask + _presupuesto_analisis_seg() if modo_pedido == "Analítico" else None
+			)
 			try:
 				explicacion, info_exp = explain(
 					pregunta_det, spec, resultado, **argumentos, intencion=intencion,
+					deadline=limite_breve,
 				)
+				info_exp["verificacion"] = _verificacion_breve(explicacion, info_exp, argumentos)
 				_log_llamada(
 					info_exp, "explain", "Éxito", consulta_id, user, aseguradora_log,
 					historial=historial,
 				)
+			except LLMTiempoAgotado as e:
+				_log_llamada(
+					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
+					historial=historial, intencion=intencion,
+				)
+				explicacion = NOTA_SIN_TIEMPO
 			except (LLMConfigError, LLMProviderError) as e:
 				_log_llamada(
 					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
@@ -7886,8 +8040,8 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	etiqueta = _etiqueta_alcance(pregunta, universo)
 	if etiqueta and _texto_normalizado(etiqueta) not in _texto_normalizado(explicacion):
 		explicacion = f"{explicacion}\n\n{etiqueta}"
-	if analisis_omitido:
-		explicacion = f"{explicacion}\n\n{NOTA_TIEMPO_ANALISIS}"
+	if nota_analisis:
+		explicacion = f"{explicacion}\n\n{nota_analisis}"
 
 	# La efectividad se pinta con la dimensión y las cuatro columnas del criterio;
 	# el resultado crudo (total, recolectadas, inconsistentes, rezagadas) no sale
@@ -7911,6 +8065,7 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		"universo": universo,
 		"universo_nombre": _nombre_aseguradora(universo),
 		"periodo": "este_anio" if ajuste_promedio else periodo,
+		"preguntas_sugeridas": _preguntas_sugeridas(pack, modo_pedido, analisis_omitido),
 		"periodo_del_texto": bool(
 			_trae_periodo(pregunta)
 			or _trae_rango_de_fechas(pregunta)

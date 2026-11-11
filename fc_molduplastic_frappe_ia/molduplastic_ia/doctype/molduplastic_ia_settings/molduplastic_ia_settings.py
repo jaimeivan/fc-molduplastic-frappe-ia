@@ -2,9 +2,9 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 
-# Tope del presupuesto de tiempo: el proxy corta a los 120 s y la respuesta
-# breve de respaldo también necesita su propia llamada.
-PRESUPUESTO_MAXIMO_SEG = 60
+# Tope del presupuesto de tiempo (2026-11-11, doble del anterior). El proxy corta
+# a los 120 s: el análisis deja una reserva para la respuesta breve de respaldo.
+PRESUPUESTO_MAXIMO_SEG = 120
 
 
 class MolduplasticIASettings(Document):

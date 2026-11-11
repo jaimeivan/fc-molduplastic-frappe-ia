@@ -31,7 +31,7 @@ COLUMNAS = [
 	"origen", "tipo_llm", "caso", "archivo", "pregunta", "modo_configurado", "modo_efectivo",
 	"intencion", "estado", "respuesta", "proveedor", "modelo", "tokens_entrada",
 	"tokens_salida", "latencia_ms", "consultas_complementarias", "latencia_analisis_ms",
-	"hallazgos", "analisis_omitido", "nota",
+	"hallazgos", "analisis_omitido", "verificacion", "preguntas_sugeridas", "nota",
 ]
 
 # Llamadas que simulan el LLM: si una prueba parchea alguna, es "simulada".
@@ -95,6 +95,11 @@ CASOS_REALES = [
 		"presupuesto_seg": 5,
 	},
 	{
+		"caso": "efectividad_por_region_analitico",
+		"pregunta": "efectividad por región en septiembre",
+		"modo": "Analítico",
+	},
+	{
 		"caso": "cliente_intenta_forzar_analitico",
 		"pregunta": "¿cuál es la efectividad de septiembre?",
 		"modo": "Breve",
@@ -137,7 +142,7 @@ def _logs_de_la_pregunta(nuevos):
 		fields=[
 			"estado", "proveedor", "modelo", "tokens_entrada", "tokens_salida", "latencia_ms",
 			"consultas_complementarias", "latencia_analisis_ms", "hallazgos", "analisis_omitido",
-			"modo_respuesta", "intencion", "error",
+			"modo_respuesta", "intencion", "error", "verificacion",
 		],
 		order_by="fecha_hora asc",
 	)
@@ -161,6 +166,7 @@ def _ejecutar_caso(caso):
 	previo = _config(modo_respuesta=caso["modo"])
 	if caso.get("presupuesto_seg"):
 		previo.update(_config(presupuesto_analisis_seg=caso["presupuesto_seg"]))
+	res = {}
 	try:
 		frappe.set_user(USUARIO_EVIDENCIA)
 		kwargs = caso.get("parametro_cliente") or {}
@@ -188,6 +194,8 @@ def _ejecutar_caso(caso):
 		latencia_analisis_ms=explain.get("latencia_analisis_ms", 0),
 		hallazgos=explain.get("hallazgos", ""),
 		analisis_omitido=explain.get("analisis_omitido", 0),
+		verificacion=explain.get("verificacion", ""),
+		preguntas_sugeridas=" | ".join(res.get("preguntas_sugeridas") or []) if isinstance(res, dict) else "",
 		nota=explain.get("error", "") or "",
 	)
 

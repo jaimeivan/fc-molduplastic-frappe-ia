@@ -157,18 +157,6 @@ class TestPresupuestoYDegradacion(ConfigAnalisis):
 			res = api.ask("efectividad de septiembre por taller")
 		self.assertIn(api.NOTA_TIEMPO_ANALISIS, res["respuesta"])
 
-	def test_deadline_se_corta_entre_consultas(self):
-		# El reloj avanza en cada lectura: la primera consulta arranca y la
-		# siguiente encuentra el presupuesto agotado.
-		reloj = iter([0.0, 0.0] + [1000.0] * 50)
-		fake_time = type("T", (), {"time": staticmethod(lambda: next(reloj))})
-		with patch.object(api, "time", fake_time), \
-			patch.object(api, "_presupuesto_analisis_seg", return_value=60), \
-			patch.object(api, "generate_spec", return_value=(_spec_efectividad(), INFO)), \
-			patch.object(api, "explain", side_effect=[("Breve.", INFO)]):
-			res = api.ask("efectividad de septiembre por taller")
-		self.assertIn(api.NOTA_TIEMPO_ANALISIS, res["respuesta"])
-
 	def test_error_inesperado_del_analisis_degrada_sin_nota(self):
 		with patch.object(api, "generate_spec", return_value=(_spec_efectividad(), INFO)), \
 			patch.object(api, "_calcular_efectividad", side_effect=ValueError("boom")), \

@@ -22,6 +22,7 @@
     "consultas_complementarias",
     "latencia_analisis_ms",
     "hallazgos",
+    "verificacion",
     "es_fallback",
     "motivo_fallback",
     "contexto_conv_section",
@@ -245,6 +246,12 @@
       "fieldname": "hallazgos",
       "fieldtype": "Data",
       "label": "Hallazgos (códigos)"
+    },
+    {
+      "fieldname": "verificacion",
+      "fieldtype": "Select",
+      "label": "Verificación de cifras",
+      "options": "\nAprobada\nReintentada\nRecortada\nDegradada\nSin verificar\nCon cifras sin respaldo"
     }
   ],
   "index_web_pages_for_search": 0,

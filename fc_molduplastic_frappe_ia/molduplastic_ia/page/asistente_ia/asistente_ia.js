@@ -66,6 +66,7 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			.ia-loader span:nth-child(3) { animation-delay: 0.3s; }
 			@keyframes ia-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-5px); opacity: 1; } }
 			#ia-sugerencias { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+			.ia-sugeridas-msg { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 			.ia-chip { cursor: pointer; font-size: 12px; padding: 4px 10px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--card-bg); color: var(--text-color); }
 			.ia-chip:hover { background: var(--bg-light-gray); }
 			#ia-periodo-bar { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
@@ -597,6 +598,17 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			// guardado como tabla, solo con su tabla.
 			m.soloGrafico || esCifraUnica(m.tabla) || tablaTextoCompleta
 		);
+		// Preguntas de seguimiento del análisis: una pregunta normal al servidor.
+		if ((m.sugeridas || []).length) {
+			const $sug = $("<div>").addClass("ia-sugeridas-msg").appendTo(div);
+			m.sugeridas.forEach((texto) => {
+				$("<button>")
+					.addClass("btn btn-default btn-xs")
+					.text(texto)
+					.on("click", () => enviarPregunta(texto))
+					.appendTo($sug);
+			});
+		}
 	}
 
 	function setUniverso(u, nombre) {
@@ -905,7 +917,11 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			state.conv = m.conversacion;
 			setUniverso(m.universo, m.universo_nombre);
 			sincronizarPeriodo(m);
-			const msg = { rol: "asistente", contenido: m.mensaje || m.respuesta };
+			const msg = {
+				rol: "asistente",
+				contenido: m.mensaje || m.respuesta,
+				sugeridas: m.preguntas_sugeridas || [],
+			};
 			if (m.columnas) {
 				msg.tabla = { columnas: m.columnas, filas: m.filas };
 				msg.spec = m.spec;

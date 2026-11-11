@@ -44,6 +44,8 @@
     "umbral_concentracion_pct",
     "tendencia_periodos",
     "comparar_ano_anterior",
+    "verificacion_cifras",
+    "preguntas_sugeridas_activas",
     "modo_excepciones",
     "glosario_section",
     "glosario"
@@ -247,11 +249,11 @@
       "fieldtype": "Column Break"
     },
     {
-      "default": "60",
+      "default": "120",
       "fieldname": "presupuesto_analisis_seg",
       "fieldtype": "Int",
       "label": "Presupuesto de tiempo del análisis (segundos)",
-      "description": "Si la respuesta analítica no termina en este tiempo, se entrega la respuesta breve con una nota. Máximo 60.",
+      "description": "Tiempo total para la respuesta analítica, contado desde que llega la pregunta. Si no alcanza, se entrega la respuesta breve con una nota. Máximo 120 (el proxy corta a los 120 s): la respuesta de respaldo necesita ~35 s, que el análisis no usa.",
       "reqd": 1
     },
     {
@@ -292,6 +294,20 @@
       "fieldtype": "Check",
       "label": "Comparar contra el mismo período del año anterior",
       "description": "Medido el 2026-11-11 en GNP: el mismo mes de 2025 tarda ~31 s, casi todo el presupuesto de tiempo. Desactívelo si las respuestas analíticas se quedan sin análisis por tiempo."
+    },
+    {
+      "default": "1",
+      "fieldname": "verificacion_cifras",
+      "fieldtype": "Check",
+      "label": "Verificar cifras de la lectura analítica",
+      "description": "Compara cada número de la respuesta analítica con los Datos. Si hay cifras sin respaldo, reintenta una vez, recorta las frases afectadas o quita la lectura. Activa por defecto."
+    },
+    {
+      "default": "1",
+      "fieldname": "preguntas_sugeridas_activas",
+      "fieldtype": "Check",
+      "label": "Mostrar preguntas sugeridas en el análisis",
+      "description": "Botones con preguntas de seguimiento bajo la respuesta analítica. Salen del playbook de la intención, nunca del modelo."
     },
     {
       "fieldname": "modo_excepciones",
