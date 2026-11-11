@@ -28,6 +28,7 @@ from fc_molduplastic_frappe_ia.molduplastic_ia.permissions import (
 	get_user_aseguradoras,
 	lista_aseguradoras,
 )
+from fc_molduplastic_frappe_ia.molduplastic_ia.intencion import clasificar
 from fc_molduplastic_frappe_ia.molduplastic_ia.query_executor import ejecutar
 from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import (
 	ALIAS_ESTADO,
@@ -6599,6 +6600,58 @@ def _historial_para_llm(conversacion, user):
 			turnos.append({"pregunta": pregunta, "respuesta": texto[:chars_max]})
 			pregunta = None
 	return turnos[-turnos_max:]
+
+
+def _reglas_de_intencion():
+	"""Orden de precedencia de las intenciones (fase 0 del análisis).
+
+	Las más específicas van primero. Solo se usan para nombrar la intención:
+	el flujo de `ask()` no depende de este orden.
+	"""
+	return (
+		("sensible", lambda p: bool(_pide_dato_sentible(p))),
+		("comparacion", lambda p: bool(_lados_contra(p))),
+		("porcentaje_categorias", lambda p: bool(_pide_porcentaje_de_categorias(p))),
+		("porcentaje_dimension", lambda p: bool(_pide_porcentaje_por_dimension(p))),
+		("mapa_efectividad", _pide_mapa_efectividad),
+		("mezcla_volumen_efectividad", lambda p: bool(_pide_mezcla_volumen_efectividad(p))),
+		("ficha_taller", _pide_ficha_taller),
+		("efectividad", _pide_efectividad),
+		("no_recolectadas", _pide_no_recuperadas),
+		("no_localizadas", _pide_no_localizadas),
+		("siniestros_pendientes", _pide_siniestros_pendientes),
+		("prioridad_pendientes", _pide_prioridad_pendientes),
+		("piezas_caras", _pide_piezas_caras),
+		("precios", lambda p: bool(_pide_piezas_con_precio(p) or _pide_solo_precios(p))),
+		("promedio_siniestros_taller", _pide_promedio_siniestros_taller),
+		("promedio", _pide_promedio),
+		("crecimiento", lambda p: bool(
+			_pide_crecimiento_siniestros(p)
+			or _pide_crecimiento_dimension(p)
+			or _pide_crecimiento_periodos(p)
+		)),
+		("resumen", _pide_resumen),
+		("recolectadas", _pide_recolectadas),
+		("siniestros_por_cdr", _pide_siniestros_por_cdr),
+		("preferencia_region", _pide_preferencia_region),
+		("marcas_accidentadas", _pide_marcas_accidentadas),
+		("pais_origen", _pide_pais_origen),
+		("anios_modelo", _pide_anios_modelo),
+		("submarcas_danadas", _pide_submarcas_danadas),
+		("piezas_mas_danadas", _pide_piezas_mas_danadas),
+		("filtro_danadas", _pide_filtro_danadas),
+		("tabla_comparativa", _pide_tabla_comparativa),
+		("distintas", _pide_agrupar_por_distintas),
+		("volumen", _pide_volumen),
+		("parte", _habla_de_parte),
+		("lista_explicita", _pide_lista_explicita),
+		("listado", _es_listado),
+	)
+
+
+def intencion_de_pregunta(pregunta):
+	"""Nombre de la intención de una pregunta (sin llamar a la BD ni al LLM)."""
+	return clasificar(pregunta, _reglas_de_intencion())
 
 
 def _explicacion_en_codigo(spec, pregunta):

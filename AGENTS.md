@@ -58,6 +58,13 @@ Vocabulario registrado en el prompt: CDR=taller; **"no recolectadas en periodo" 
 
 ## Pendiente (decisiones del dueño)
 - Cargar API keys de DeepSeek/GLM en `Molduplastic IA Settings`; sin keys, `ask()` responde "servicio no disponible" (verificado en tests con mocks).
+- **Decisiones del dueño para el análisis (2026-11-10), plan en curso:**
+  - Modo de respuesta (`Breve` / `Analítico`) solo en configuración del Asistente IA, nunca desde el cliente. Global + excepciones por intención; por defecto `Breve`.
+  - Lectura analítica: primero por LLM; si el LLM falla, agota tiempo o no pasa la verificación de cifras, se usa plantilla de código.
+  - Si el análisis excede el presupuesto de tiempo, se entrega la respuesta breve con la nota: "El análisis completo tardó demasiado para este período. Para verlo, reduce el período (por ejemplo, a un mes) o acota una dimensión." Se registra en `IA API Log`.
+  - Objetivo de efectividad (75 %) en configuración, no en código. La constante `OBJETIVO_EFECTIVIDAD` se elimina al migrar.
+  - Mínimo de 50 piezas: aplica solo a hallazgos de porcentajes (efectividad, no entregadas, pendientes, no localizadas por taller), no a conteos ni listados.
+  - Glosario de negocio: lo valida el administrador del Asistente IA. Entradas en `Borrador` / `Validado`; solo las `Validado` se inyectan en prompts.
 - Purga de `IA API Log`: diseñada pero no activada (prompt+respuesta completos crecen rápido).
 
 ## Preguntas que ya responde el LLM (antes eran módulos fijos)
@@ -285,7 +292,7 @@ Verificado en Afirme, septiembre: "¿cuántas refacciones de facia delantera hay
 - **`_es_compleja` solo manda al modelo profundo preguntas analíticas** ("compara", "analiza", "tendencia", "evolución", >160 caracteres); rankings, promedios y desgloses (que arma el código) usan el **modelo económico**, más rápido y barato.
 - **`_explicacion_en_codigo`**: promedios (precio/ratio/piezas por siniestro), rankings/listados de precio, comparativas y crecimiento **no llaman a `explain`** (su texto ya se descartaba y solo agregaba latencia y tokens); `info_exp` queda vacío y los bloques de post-proceso arman título, período y tabla.
 - **El JS muestra el motivo real** (502/503/504 = servidor reiniciando o consulta lenta; 401/403 = sesión expirada; sin código = red/timeout; otro = HTTP N) y agrega un botón **Reintentar** con la misma pregunta.
-- El 402 se sigue avisando como "El proveedor de IA no tiene saldo (HTTP 402)…". El 2026-11-06 la cuenta de Opencode Zen volvió a quedar en cero: hay que recargarla o cargar una clave propia en el Settings.
+- El 402 se sigue avisando como "El proveedor de IA no tiene saldo (HTTP 402)…". Hubo corte de saldo el 2026-11-06; desde el 2026-11-10 el proveedor responde de nuevo (27 llamadas `Éxito` en `IA API Log`, sin 402). Revisar `IA API Log` antes de asumir un corte. Los fallos del 2026-11-06 (texto vacío) y del 2026-11-09 (`max_tokens` agotado) no son de saldo: ver "Presupuesto de tokens".
 Tests: `TestExplicacionEnCodigo` (`test_api.py`), `test_las_preguntas_que_arma_el_codigo_no_usan_el_modelo_pro` y `test_timeout_y_tokens_acotados_por_el_proxy` (`test_llm.py`).
 
 **Ojo con `@frappe.whitelist()` al insertar helpers antes de `ask` (2026-11-06).** Al agregar una función justo encima de `def ask(...)` el decorador puede quedar pegado al helper: pasó con `_explicacion_en_codigo` y el chat mostró "Function fc_molduplastic_frappe_ia.molduplastic_ia.api.ask is not whitelisted". El decorador tiene que ir inmediatamente antes de `def ask(...)` (y los helpers no se whitelistean). `TestEndpointsWhitelisted` (`test_api.py`) fija que `api.ask` esté en `frappe.whitelisted` y que `_explicacion_en_codigo` no lo esté.
