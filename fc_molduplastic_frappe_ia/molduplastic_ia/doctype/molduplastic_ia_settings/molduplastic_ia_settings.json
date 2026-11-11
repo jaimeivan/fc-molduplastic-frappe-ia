@@ -16,6 +16,22 @@
     "column_break_ia3",
     "max_llamadas_por_minuto",
     "max_tokens_respuesta",
+    "contexto_conv_section",
+    "max_turnos_contexto",
+    "column_break_ia5",
+    "max_chars_contexto",
+    "sync_section",
+    "sync_source_host",
+    "sync_source_port",
+    "sync_source_database",
+    "sync_source_user",
+    "sync_source_password",
+    "sync_ssl",
+    "sync_ssl_ca",
+    "sync_column_break",
+    "sync_batch_size",
+    "sync_pause_ms",
+    "sync_checkpoints_json",
     "sugerencias_section",
     "sugerencias"
   ],
@@ -84,6 +100,101 @@
       "fieldname": "max_tokens_respuesta",
       "fieldtype": "Int",
       "label": "Máx. tokens de respuesta (solo HTTP)"
+    },
+    {
+      "fieldname": "contexto_conv_section",
+      "fieldtype": "Section Break",
+      "label": "Contexto conversacional (historial del chat)"
+    },
+    {
+      "default": "3",
+      "description": "Cuántos turnos previos (pregunta + respuesta) se reenvían al modelo para resolver referencias como \"y por taller?\" o \"esos mismos\". No es la ventana de contexto del modelo.",
+      "fieldname": "max_turnos_contexto",
+      "fieldtype": "Int",
+      "label": "Máx. turnos de historial en el prompt",
+      "reqd": 1
+    },
+    {
+      "fieldname": "column_break_ia5",
+      "fieldtype": "Column Break"
+    },
+    {
+      "default": "400",
+      "description": "Recorte de cada pregunta y de cada respuesta del historial antes de mandarlas al modelo.",
+      "fieldname": "max_chars_contexto",
+      "fieldtype": "Int",
+      "label": "Máx. caracteres por pregunta/respuesta del historial",
+      "reqd": 1
+    },
+    {
+      "fieldname": "sync_section",
+      "fieldtype": "Section Break",
+      "label": "Sincronización manual desde producción"
+    },
+    {
+      "description": "Servidor de base de datos de producción. La cuenta debe tener SELECT en las tablas/vistas y SHOW VIEW para descubrir dependencias; no requiere permisos de escritura.",
+      "fieldname": "sync_source_host",
+      "fieldtype": "Data",
+      "label": "Host de origen"
+    },
+    {
+      "default": "3306",
+      "fieldname": "sync_source_port",
+      "fieldtype": "Int",
+      "label": "Puerto de origen"
+    },
+    {
+      "fieldname": "sync_source_database",
+      "fieldtype": "Data",
+      "label": "Base de datos de origen"
+    },
+    {
+      "fieldname": "sync_source_user",
+      "fieldtype": "Data",
+      "label": "Usuario de solo lectura"
+    },
+    {
+      "fieldname": "sync_source_password",
+      "fieldtype": "Password",
+      "label": "Contraseña de origen"
+    },
+    {
+      "default": "1",
+      "description": "Usa TLS al conectar con producción. Si el servidor usa una CA privada, configura su ruta en el campo siguiente.",
+      "fieldname": "sync_ssl",
+      "fieldtype": "Check",
+      "label": "Conexión TLS"
+    },
+    {
+      "fieldname": "sync_ssl_ca",
+      "fieldtype": "Data",
+      "label": "Ruta local del certificado CA (opcional)"
+    },
+    {
+      "fieldname": "sync_column_break",
+      "fieldtype": "Column Break"
+    },
+    {
+      "default": "500",
+      "description": "Filas por lote (se limita a un máximo de 2,000).",
+      "fieldname": "sync_batch_size",
+      "fieldtype": "Int",
+      "label": "Tamaño de lote"
+    },
+    {
+      "default": "100",
+      "description": "Pausa entre lotes para reducir la carga sobre producción y esta copia.",
+      "fieldname": "sync_pause_ms",
+      "fieldtype": "Int",
+      "label": "Pausa entre lotes (ms)"
+    },
+    {
+      "default": "{}",
+      "fieldname": "sync_checkpoints_json",
+      "fieldtype": "Code",
+      "hidden": 1,
+      "label": "Checkpoints internos de sincronización",
+      "read_only": 1
     },
     {
       "fieldname": "sugerencias_section",

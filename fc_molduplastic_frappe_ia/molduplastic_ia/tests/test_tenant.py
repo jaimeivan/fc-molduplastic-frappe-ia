@@ -3,6 +3,7 @@
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
+from fc_molduplastic_frappe_ia.molduplastic_ia import api
 from fc_molduplastic_frappe_ia.molduplastic_ia.permissions import get_user_aseguradoras
 from fc_molduplastic_frappe_ia.molduplastic_ia.query_executor import ejecutar
 from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import (
@@ -903,3 +904,55 @@ class TestFiltroAseguradoraEnExecutor(FrappeTestCase):
 		)[0][0]
 		self.assertEqual(res["filas"][0][0], directo)
 		self.assertGreater(directo, 0)
+
+
+class TestPeriodoDatos(FrappeTestCase):
+	"""El rango de la barra del chat sale de las piezas del propio tenant."""
+
+	def test_rango_coincide_con_sql_directo(self):
+		frappe.set_user(USUARIO_GNP)
+		self.addCleanup(frappe.set_user, "Administrator")
+		frappe.cache().delete_value("molduplastic_ia:periodo_pieza:6")
+		self.addCleanup(frappe.cache().delete_value, "molduplastic_ia:periodo_pieza:6")
+		res = api.periodo_datos()
+		esperado = frappe.db.sql(
+			"SELECT MIN(creation), MAX(modified) FROM tabPieza WHERE aseguradora = %s", ["6"]
+		)[0]
+		self.assertTrue(res["mostrar"])
+		self.assertEqual(res["universo"], "GNP")
+		self.assertEqual(res["desde"], str(esperado[0]))
+		self.assertEqual(res["hasta"], str(esperado[1]))
+		self.assertNotIn("18:", res["desde_texto"] + res["hasta_texto"])
+
+
+class TestLikeConComodinInterno(FrappeTestCase):
+	"""El % interno de un LIKE es comodín ("FACIA%DEL%" = FACIA DEL., …)."""
+
+	def test_patron_compuesto_cuenta_igual_que_el_sql(self):
+		spec = {
+			"doctype": "Pieza",
+			"fields": [],
+			"filters": {
+				"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"],
+				"piezades": ["like", "FACIA%DEL%"],
+			},
+			"aggregations": [
+				{
+					"func": "count",
+					"field": "*",
+					"alias": "n",
+					"filtros": {"recolectable": ["=", 1]},
+				}
+			],
+			"group_by": [],
+			"limit": 1,
+		}
+		res = ejecutar(spec, "Administrator", alcance="1")
+		directo = frappe.db.sql(
+			"""SELECT COUNT(*) FROM tabPieza
+			WHERE aseguradora = '1' AND recolectable = 1
+			AND fechaingreso BETWEEN '2026-09-01 00:00:00' AND '2026-09-30 23:59:59'
+			AND piezades LIKE 'FACIA%DEL%'"""
+		)[0][0]
+		self.assertGreater(directo, 0)
+		self.assertEqual(res["filas"][0][0], directo)

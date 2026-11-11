@@ -5,7 +5,7 @@ from frappe.tests.utils import FrappeTestCase
 
 from fc_molduplastic_frappe_ia.molduplastic_ia.query_executor import (
 	_limite_sql,
-	_unir_rezagadas,
+	_unir_medidas,
 	_valores_con_docname,
 )
 from fc_molduplastic_frappe_ia.molduplastic_ia.validate_spec import (
@@ -558,16 +558,15 @@ class TestComparacionEntreCampos(FrappeTestCase):
 				)
 			)
 
-	def test_ocho_agregaciones_para_resumen(self):
-		"""El resumen de 8 cifras (ingresadas/recolectadas/no recolectadas/
-		pendientes/inconsistentes recolectadas/inconsistentes no recolectadas/
-		rezagadas recolectadas/rezagadas no recolectadas) necesita 8."""
+	def test_diez_agregaciones_para_resumen(self):
+		"""El resumen necesita 10: 8 categorías + las 3 de la unión (menos la
+		recolectadas vieja) = 10."""
 		aggs = [
-			{"func": "count", "field": "*", "alias": f"m{i}"} for i in range(8)
+			{"func": "count", "field": "*", "alias": f"m{i}"} for i in range(10)
 		]
 		s = validar_spec(spec_base(fields=[], aggregations=aggs))
-		self.assertEqual(len(s["aggregations"]), 8)
-		aggs.append({"func": "count", "field": "*", "alias": "m8"})
+		self.assertEqual(len(s["aggregations"]), 10)
+		aggs.append({"func": "count", "field": "*", "alias": "m10"})
 		with self.assertRaises(SpecInvalida):
 			validar_spec(spec_base(fields=[], aggregations=aggs))
 
@@ -762,7 +761,7 @@ class TestUnionRezagadas(FrappeTestCase):
 			"filas": [[4064, 47, 228]],
 		}
 		rez = {"columnas": ["rezagadas_recolectadas"], "filas": [[4252]]}
-		filas, columnas = _unir_rezagadas(base, rez, [])
+		filas, columnas = _unir_medidas(base, rez, [])
 		self.assertEqual(columnas, base["columnas"] + ["rezagadas_recolectadas"])
 		self.assertEqual(filas, [[4064, 47, 228, 4252]])
 
@@ -775,7 +774,7 @@ class TestUnionRezagadas(FrappeTestCase):
 			"columnas": ["tipo_carga", "rezagadas_recolectadas"],
 			"filas": [["10", 45], ["12", 7]],
 		}
-		filas, columnas = _unir_rezagadas(base, rez, ["tipo_carga"])
+		filas, columnas = _unir_medidas(base, rez, ["tipo_carga"])
 		self.assertEqual(columnas, base["columnas"] + ["rezagadas_recolectadas"])
 		self.assertEqual(filas[0], ["10", 100, 2, 3, 45])
 		self.assertEqual(filas[1], ["11", 50, 1, 0, 0])

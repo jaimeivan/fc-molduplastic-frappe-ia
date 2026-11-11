@@ -137,6 +137,11 @@ class TestPromptSpec(FrappeTestCase):
 		self.assertIn(f"El objetivo de efectividad es {F.OBJETIVO_EFECTIVIDAD}%", prompt)
 		self.assertNotIn("{objetivo_efectividad}", prompt)
 
+	def test_prompt_trata_cdr_como_taller_y_no_inventa_capacidad(self):
+		self.assertIn("significa taller/Centro de Reparación", F.SYSTEM_SPEC)
+		self.assertIn("capacidad máxima teórica", F.SYSTEM_SPEC)
+		self.assertIn("count_distinct(siniestro)", F.SYSTEM_SPEC)
+
 	def _mensajes(self, pregunta, historial=None):
 		capturado = {}
 
@@ -602,15 +607,15 @@ class TestPorcentajes(FrappeTestCase):
 		resultado = {"columnas": ["marca", "count"], "filas": [["Nissan", 17]]}
 		self.assertEqual(F._porcentajes({}, resultado), [])
 
-	def test_suma_las_tres_categorias_de_recuperacion(self):
-		"""Efectividad = (recolectadas + inconsistentes + rezagadas) / ingresadas."""
+	def test_suma_las_tres_recolectadas(self):
+		"""Recolectadas = estrictas + inconsistentes recolectadas + rezagadas."""
 		spec = {
 			"group_by": ["tipo_carga"],
 			"aggregations": [
 				{"alias": "total"},
 				{"alias": "recolectadas"},
-				{"alias": "inconsistentes_recolectadas"},
-				{"alias": "rezagadas_recolectadas"},
+				{"alias": "recolectadas_inconsistentes"},
+				{"alias": "recolectadas_periodo"},
 			],
 		}
 		resultado = {
@@ -618,16 +623,16 @@ class TestPorcentajes(FrappeTestCase):
 				"tipo_carga",
 				"total",
 				"recolectadas",
-				"inconsistentes_recolectadas",
-				"rezagadas_recolectadas",
+				"recolectadas_inconsistentes",
+				"recolectadas_periodo",
 			],
 			"filas": [["10", 100, 2, 3, 45]],
 		}
 		salida = F._porcentajes(spec, resultado)[0]
 		self.assertEqual(salida["recuperadas"], 50)
-		self.assertEqual(salida["recolectadas_estrictas"], 2)
-		self.assertEqual(salida["inconsistentes_recolectadas"], 3)
-		self.assertEqual(salida["rezagadas_recolectadas"], 45)
+		self.assertEqual(salida["recolectadas_ingreso"], 2)
+		self.assertEqual(salida["recolectadas_inconsistentes"], 3)
+		self.assertEqual(salida["recolectadas_periodo"], 45)
 		self.assertEqual(salida["pct"], 50.0)
 		self.assertNotIn("recolectadas", salida)
 
@@ -661,10 +666,33 @@ class TestPorcentajes(FrappeTestCase):
 	def test_prompt_pide_usar_el_porcentaje_calculado(self):
 		self.assertIn('"porcentajes"', F.SYSTEM_EXPLAIN)
 
-	def test_prompt_llama_recuperadas_a_la_suma(self):
-		self.assertIn('la columna "Recuperadas" de la tabla es esa suma', F.SYSTEM_EXPLAIN)
-		self.assertIn('"Recolectadas" a secas es solo la categoría estricta', F.SYSTEM_EXPLAIN)
-		self.assertNotIn('la columna "Recolectadas"', F.SYSTEM_EXPLAIN)
+	def test_prompt_usa_recolectadas_en_la_tabla(self):
+		self.assertIn('"recuperadas" es la suma de las tres categorías', F.SYSTEM_EXPLAIN)
+		self.assertIn('La columna se llama "Recolectadas"', F.SYSTEM_EXPLAIN)
+		self.assertIn('"Ingresadas", "Recolectadas",', F.SYSTEM_EXPLAIN)
+		self.assertNotIn('"Recuperadas"', F.SYSTEM_EXPLAIN)
+
+	def test_las_preguntas_que_arma_el_codigo_no_usan_el_modelo_pro(self):
+		# "promedio"/"por marca" ya son deterministas: las resuelve el modelo eco.
+		self.assertFalse(F._es_compleja("¿Cuál es el costo promedio de una facia delantera por marca?"))
+		self.assertFalse(F._es_compleja("piezas por taller en septiembre"))
+		self.assertTrue(F._es_compleja("compara las agencias con los talleres"))
+		self.assertTrue(F._es_compleja("analiza la tendencia de siniestros"))
+
+	def test_timeout_y_tokens_acotados_por_el_proxy(self):
+		# La configuración tiene 220 s y 40.000 tokens; el adaptador los acota
+		# (nginx corta a los 120 s y el modelo no debe tardar minutos).
+		from fc_molduplastic_frappe_ia.molduplastic_ia.llm_factory import (
+			OpenAICompatibleAdapter,
+		)
+
+		adapter = OpenAICompatibleAdapter("prueba", "http://localhost", "k", "m")
+		self.assertEqual(adapter.timeout, 55)
+		self.assertEqual(adapter.max_tokens, 4000)
+
+	def test_prompt_incluye_refaccion_como_parte(self):
+		self.assertIn('"misma pieza" son lo', F.SYSTEM_SPEC)
+		self.assertIn("agrupa por parte_pieza", F.SYSTEM_SPEC)
 
 	def test_prompt_nombra_los_campos_de_cada_dimension(self):
 		"""En Pieza `plaza` no existe como campo: el prompt tiene que decir `id_plaza`."""
@@ -737,10 +765,11 @@ class TestPromptComparacion(FrappeTestCase):
 		self.assertIn("se unifican solos", F.SYSTEM_SPEC)
 		self.assertIn("La plaza de una recolección sale de Recolector-Talleres", F.SYSTEM_SPEC)
 
-	def test_resumen_agrega_recuperadas_y_no_recuperadas(self):
-		self.assertIn("**Recuperadas y no recuperadas**", F.SYSTEM_EXPLAIN)
-		self.assertIn('el campo\n"recuperadas"', F.SYSTEM_EXPLAIN)
+	def test_resumen_no_agrega_la_linea_de_no_recolectadas(self):
+		self.assertIn('No agregues ninguna línea de cierre después de las tablas', F.SYSTEM_EXPLAIN)
+		self.assertIn('nada de\n"No recolectadas: N"', F.SYSTEM_EXPLAIN)
 		self.assertIn('"no_recuperadas"', F.SYSTEM_EXPLAIN)
+		self.assertNotIn("**Recuperadas y no recuperadas**", F.SYSTEM_EXPLAIN)
 
 	def test_totales_recuperadas(self):
 		resultado = {
@@ -754,8 +783,8 @@ class TestPromptComparacion(FrappeTestCase):
 		}
 		self.assertEqual(F.totales_recuperadas(resultado["filas"], resultado), [50])
 
-	def test_prompt_define_no_recuperadas(self):
-		self.assertIn('Definición de NO RECUPERADAS', F.SYSTEM_SPEC)
+	def test_prompt_define_no_recolectadas_total(self):
+		self.assertIn('Definición de NO RECOLECTADAS (el total', F.SYSTEM_SPEC)
 		self.assertIn('"no_recolectadas", "inconsistentes_no_recolectadas"', F.SYSTEM_SPEC)
 		self.assertIn('datos traen "no_recuperadas"', F.SYSTEM_EXPLAIN)
 
@@ -764,8 +793,9 @@ class TestPromptComparacion(FrappeTestCase):
 		self.assertIn("NO pintes la tabla con los ceros", F.SYSTEM_EXPLAIN)
 
 	def test_no_entregadas_es_no_recolectadas(self):
-		self.assertIn('"no entregadas" —es\nel mismo sinónimo—', F.SYSTEM_SPEC)
-		self.assertIn('"No entregadas" es lo mismo que "no recolectadas"', F.SYSTEM_SPEC)
+		self.assertIn('"no recolectadas en periodo" —el nombre', F.SYSTEM_SPEC)
+		self.assertIn('"no entregadas" —es el mismo sinónimo—', F.SYSTEM_SPEC)
+		self.assertIn('"no recuperadas" y "no entregadas" son sinónimos', F.SYSTEM_SPEC)
 
 	def test_submarca_se_traduce_a_tipo(self):
 		self.assertIn('"Submarca" (o "modelo del vehículo") SÍ es el campo', F.SYSTEM_SPEC)
@@ -786,3 +816,144 @@ class TestPromptComparacion(FrappeTestCase):
 	def test_explain_pide_la_frase_de_comparacion(self):
 		self.assertIn("compara dos grupos por efectividad", F.SYSTEM_EXPLAIN)
 		self.assertIn("la diferencia en puntos", F.SYSTEM_EXPLAIN)
+
+
+class TestPideDetalle(FrappeTestCase):
+	"""El resumen detallado pide las ocho categorías, no la tabla corta."""
+
+	def test_reconoce_el_pedido_de_todas_las_categorias(self):
+		for pregunta in (
+			"dame el resumen de piezas detallado",
+			"muestra el resumen de piezas con todas las categorías",
+			"dame el detalle completo de piezas",
+			"el resumen completo de piezas",
+		):
+			self.assertTrue(F._pide_detalle(pregunta), pregunta)
+
+	def test_el_resumen_corto_no_es_detalle(self):
+		for pregunta in (
+			"muestra el resumen de piezas",
+			"¿cómo va la recolección de mis piezas este mes?",
+			"dame el total de piezas no recolectadas",
+		):
+			self.assertFalse(F._pide_detalle(pregunta), pregunta)
+
+	def test_la_bandera_viaja_en_los_datos(self):
+		self.assertIn('si los Datos traen "detalle": true', F.SYSTEM_EXPLAIN)
+		self.assertIn("van las dos tablas largas", F.SYSTEM_EXPLAIN)
+
+
+class TestResumenDetalle(FrappeTestCase):
+	"""El resumen detallado agrega "recolectadas en periodo" como columna propia."""
+
+	def _resultado(self):
+		return {
+			"columnas": [
+				"total",
+				"recolectadas",
+				"recolectadas_inconsistentes",
+				"recolectadas_periodo",
+				"no_recolectadas",
+				"pendientes",
+				"inconsistentes_recolectadas",
+				"inconsistentes_no_recolectadas",
+				"rezagadas_recolectadas",
+				"rezagadas_no_recolectadas",
+			],
+			"filas": [[4064, 47, 228, 4252, 2, 3768, 228, 8, 4252, 376]],
+		}
+
+	def test_sin_detalle_no_agrega_la_columna(self):
+		filas, columnas = F._colapsar_recolectadas(
+			[self._resultado()["filas"][0]], self._resultado()
+		)
+		self.assertNotIn("recolectadas_en_periodo", columnas)
+		self.assertEqual(filas[0][columnas.index("recolectadas")], 4527)
+
+	def test_detalle_conserva_las_recolectadas_en_periodo(self):
+		filas, columnas = F._colapsar_recolectadas(
+			[self._resultado()["filas"][0]], self._resultado(), detalle=True
+		)
+		self.assertIn("recolectadas_en_periodo", columnas)
+		self.assertEqual(filas[0][columnas.index("recolectadas_en_periodo")], 47)
+		# La suma de las tres sigue siendo la fila "Recolectadas".
+		self.assertEqual(filas[0][columnas.index("recolectadas")], 4527)
+		self.assertEqual(
+			columnas[columnas.index("recolectadas") + 1], "recolectadas_en_periodo"
+		)
+
+	def test_prompt_lista_las_dos_filas_del_detalle(self):
+		self.assertIn('"Recolectadas en periodo" (el campo recolectadas_en_periodo)', F.SYSTEM_EXPLAIN)
+		self.assertIn('"No recolectadas en periodo"', F.SYSTEM_EXPLAIN)
+
+
+class TestPromptRedaccionesDeEfectividad(FrappeTestCase):
+	def test_prompt_lista_las_otras_redacciones(self):
+		self.assertIn("Toda pregunta que mida qué parte de las piezas se recolectó", F.SYSTEM_SPEC)
+		self.assertIn('"tasa de recolección", "nivel de', F.SYSTEM_SPEC)
+		self.assertIn("numerador son SIEMPRE las piezas recolectadas", F.SYSTEM_SPEC)
+
+
+class TestPromptRangoDeDosMeses(FrappeTestCase):
+	def test_prompt_pide_usar_la_etiqueta_del_rango(self):
+		self.assertIn('Si los Datos traen "periodo"', F.SYSTEM_EXPLAIN)
+		self.assertIn("no lo partas en dos tablas", F.SYSTEM_EXPLAIN)
+
+	def test_prompt_pide_el_rango_en_cualquier_pregunta(self):
+		self.assertIn("Encabezado obligatorio de TODA respuesta", F.SYSTEM_EXPLAIN)
+		self.assertIn('"titulo"', F.SYSTEM_EXPLAIN)
+		self.assertIn('viene como "periodo"', F.SYSTEM_EXPLAIN)
+		self.assertIn("dos líneas separadas por una línea\nen blanco", F.SYSTEM_EXPLAIN)
+		self.assertIn("para un mes", F.SYSTEM_EXPLAIN)
+		self.assertIn("para un año", F.SYSTEM_EXPLAIN)
+
+	def test_spec_sabe_que_es_un_solo_rango(self):
+		self.assertIn("es UN SOLO rango", F.SYSTEM_SPEC)
+		self.assertIn("fecha inicio = primer día del mes anterior", F.SYSTEM_SPEC)
+
+
+class TestEstatusLegible(FrappeTestCase):
+	"""El id_estatus viaja con su nombre, nunca con el número."""
+
+	def test_traduce_el_id_al_nombre(self):
+		resultado = {
+			"columnas": ["id_estatus", "no_recolectadas"],
+			"filas": [["206", 376], ["202", 8], ["200", 2]],
+		}
+		with patch.object(F.frappe, "get_all", return_value=[]):
+			mapa = F._mapa_estatus(resultado)
+		filas = F._estatus_legible(resultado, resultado["filas"], mapa)
+		self.assertEqual([f[0] for f in filas], ["Pieza no localizada", "El vehículo fue pérdida total", "No recolectado"])
+
+	def test_prompt_usa_el_catalogo_de_estatus(self):
+		self.assertIn('group_by ["id_estatus"]', F.SYSTEM_SPEC)
+		self.assertIn("Pieza.motivo está vacío", F.SYSTEM_SPEC)
+		self.assertIn('la primera columna se llama "Estatus"', F.SYSTEM_EXPLAIN)
+
+
+class TestRecolectadasPorDimension(FrappeTestCase):
+	"""Conteo de recolectadas por dimensión: sin filas en 0 y ordenado."""
+
+	def test_descarta_grupos_en_cero(self):
+		spec = {
+			"group_by": ["taller_asignado"],
+			"aggregations": [
+				{"func": "count", "field": "*", "alias": "recolectadas"},
+				{"func": "count", "field": "*", "alias": "recolectadas_inconsistentes"},
+				{"func": "count", "field": "*", "alias": "recolectadas_periodo"},
+			],
+		}
+		resultado = {
+			"columnas": [
+				"taller_asignado",
+				"recolectadas",
+				"recolectadas_inconsistentes",
+				"recolectadas_periodo",
+			],
+			"filas": [["A", 5, 0, 0], ["B", 0, 0, 0], ["C", 0, 2, 3]],
+		}
+		datos = TestPromptExplain._datos_enviados(
+			self, spec, resultado, pregunta="piezas recolectadas por taller"
+		)
+		valores = {str(f[0]): f[1] for f in datos["filas"]}
+		self.assertEqual(valores, {"A": 5, "C": 5})

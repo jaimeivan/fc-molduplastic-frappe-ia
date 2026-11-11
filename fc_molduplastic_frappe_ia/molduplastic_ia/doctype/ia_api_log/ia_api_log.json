@@ -18,6 +18,12 @@
     "operacion",
     "es_fallback",
     "motivo_fallback",
+    "contexto_conv_section",
+    "max_turnos_contexto",
+    "max_chars_contexto",
+    "column_break_log_ctx",
+    "turnos_previos",
+    "chars_previos",
     "contenido_section",
     "prompt",
     "column_break_log3",
@@ -112,6 +118,35 @@
       "fieldname": "motivo_fallback",
       "fieldtype": "Small Text",
       "label": "Motivo del fallback"
+    },
+    {
+      "fieldname": "contexto_conv_section",
+      "fieldtype": "Section Break",
+      "label": "Contexto de la conversación"
+    },
+    {
+      "fieldname": "max_turnos_contexto",
+      "fieldtype": "Int",
+      "label": "Turnos de historial configurados"
+    },
+    {
+      "fieldname": "max_chars_contexto",
+      "fieldtype": "Int",
+      "label": "Caracteres por turno configurados"
+    },
+    {
+      "fieldname": "column_break_log_ctx",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "turnos_previos",
+      "fieldtype": "Int",
+      "label": "Turnos enviados en el historial"
+    },
+    {
+      "fieldname": "chars_previos",
+      "fieldtype": "Int",
+      "label": "Caracteres enviados del historial"
     },
     {
       "fieldname": "contenido_section",

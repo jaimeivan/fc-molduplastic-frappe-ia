@@ -45,8 +45,8 @@ def ejecutar(spec, user=None, alcance=None):
 			)
 		spec = _sin_filtro_aseguradora(spec)
 	spec = _spec_con_aseguradora(spec)
-	if _lleva_rezagadas(spec):
-		return _ejecutar_con_rezagadas(spec, user, alcance)
+	if _lleva_dos_bases(spec):
+		return _ejecutar_dos_bases(spec, user, alcance)
 	return _ejecutar_spec(spec, user, alcance)
 
 
@@ -72,11 +72,52 @@ def _sin_filtro_aseguradora(spec):
 	return nuevo
 
 
-def _lleva_rezagadas(spec):
-	aggs = spec.get("aggregations") or []
-	return len(aggs) > 1 and any(
-		str(a.get("alias") or "").strip().lower() == ALIAS_REZAGADAS for a in aggs
-	)
+def _base_de_agg(agg, spec=None):
+	"""Base de fecha de una agregación: su propio "between" manda.
+
+	Las medidas del período por ingreso llevan `fechaingreso` en sus filtros; las
+	que se miden por recolección (rezagadas, recolectadas del período) llevan
+	`fecha_hora_recoleccion`. Las que no traen ninguna usan el filtro global y
+	corren en la consulta principal.
+	"""
+	filtros = agg.get("filtros") or {}
+
+	def es_between(f):
+		return isinstance(f, list) and len(f) == 3 and str(f[0]).lower() == "between"
+
+	# La base es el campo cuyo BETWEEN define el período. Una rezagada trae
+	# fecha_hora_recoleccion between (su período) y fechaingreso "<" (el corte);
+	# la unión de recolectadas trae los dos between y va por ingreso.
+	if es_between(filtros.get("fecha_hora_recoleccion")) and not es_between(
+		filtros.get("fechaingreso")
+	):
+		return "recoleccion"
+	if filtros.get("fechaingreso") is not None:
+		return "ingreso"
+	# Un filtro de recolección que no sea un between no define el período (p.
+	# ej. "fecha_hora_recoleccion is null" de pendientes): va con el global.
+	# Sin fecha propia: manda el filtro global del spec.
+	glob = (spec or {}).get("filters") or {}
+	if glob.get("fechaingreso") is not None:
+		return "ingreso"
+	if glob.get("fecha_hora_recoleccion") is not None:
+		return "recoleccion"
+	return None
+
+
+def _lleva_dos_bases(spec):
+	"""True si el spec mezcla medidas por ingreso y por recolección."""
+	bases = {_base_de_agg(a, spec) for a in spec.get("aggregations") or []}
+	return "ingreso" in bases and "recoleccion" in bases
+
+
+def _periodo_comun(aggs, campo):
+	"""El primer `between` del campo en los filtros de las agregaciones."""
+	for agg in aggs:
+		f = (agg.get("filtros") or {}).get(campo)
+		if isinstance(f, list) and len(f) == 3 and str(f[0]).lower() == "between":
+			return f
+	return None
 
 
 def _ejecutar_spec(spec, user, alcance, con_cobertura=True):
@@ -95,78 +136,92 @@ def _ejecutar_spec(spec, user, alcance, con_cobertura=True):
 	return {"columnas": columnas, "filas": filas, "cobertura": cobertura}
 
 
-def _ejecutar_con_rezagadas(spec, user, alcance):
-	"""La efectividad mezcla dos poblaciones: se consultan por separado y se unen.
+def _ejecutar_dos_bases(spec, user, alcance):
+	"""Consulta por separado lo que se mide por ingreso y lo que se mide por
+	recolección, y lo une por la dimensión del group_by.
 
-	Las tres primeras categorías van sobre `fechaingreso`
-	(`idx_ia_aseg_fechaingreso_siniestro`); las rezagadas, sobre
-	`fecha_hora_recoleccion` (`idx_ia_aseg_fecharecoleccion`). En un solo SQL el
-	WHERE no puede acotar las dos fechas a la vez: con `filters` vacío MySQL
-	escanea el tenant completo (GNP en el año tardaba 11 minutos; separadas son
-	~14 s + ~28 s, cada una por su índice).
-
-	Sin cobertura a propósito: los campos que mide (`id_estatus`,
-	`fecha_hora_recoleccion`) son las condiciones de la fórmula, y sus nulos
-	significan "no recolectada", no dato faltante. Medirla costaba minutos sobre
-	el año (GNP: 190 s contra 42 s) y el modelo la repetía como advertencia.
+	En un solo SQL el WHERE no puede acotar las dos fechas a la vez: con
+	`filters` vacío MySQL escanea el tenant completo (GNP en el año tardaba 11
+	minutos; separadas son ~14 s + ~28 s, cada una por su índice). Sin cobertura
+	por el mismo motivo que la ruta de efectividad: los campos medidos son las
+	condiciones de la fórmula, no datos faltantes.
 	"""
 	aggs = spec["aggregations"]
-	rez = next(a for a in aggs if str(a.get("alias") or "").strip().lower() == ALIAS_REZAGADAS)
-	principal = {**spec, "aggregations": [a for a in aggs if a is not rez]}
-	# El período de las rezagadas es su recolección: el filtro global del spec
-	# (fechaingreso del período) no aplica; sus "filtros" ya traen todo.
+	por_ingreso = [a for a in aggs if _base_de_agg(a, spec) != "recoleccion"]
+	por_recoleccion = [a for a in aggs if _base_de_agg(a, spec) == "recoleccion"]
+	principal = {**spec, "aggregations": por_ingreso}
+	periodo = _periodo_comun(por_ingreso, "fechaingreso")
+	if periodo:
+		principal["filters"] = {**(spec.get("filters") or {}), "fechaingreso": periodo}
 	aparte = {
 		**spec,
-		"filters": dict(rez.get("filtros") or {}),
-		"aggregations": [{k: v for k, v in rez.items() if k != "filtros"}],
+		"filters": dict(spec.get("filters") or {}),
+		"aggregations": por_recoleccion,
 		"order_by": [],
 		"limit": _max_limit(),
 	}
+	periodo_r = _periodo_comun(por_recoleccion, "fecha_hora_recoleccion")
+	if periodo_r:
+		aparte["filters"]["fecha_hora_recoleccion"] = periodo_r
+	# La base de cada consulta la manda su propio período: el filtro global de
+	# la otra base no aplica (una rezagada ingresó antes del período).
+	aparte["filters"].pop("fechaingreso", None)
+	principal["filters"].pop("fecha_hora_recoleccion", None)
 	base = _ejecutar_spec(principal, user, alcance, con_cobertura=False)
 	otros = _ejecutar_spec(aparte, user, alcance, con_cobertura=False)
-	base["filas"], base["columnas"] = _unir_rezagadas(base, otros, spec.get("group_by") or [])
-	return base
+	filas, columnas = _unir_medidas(base, otros, spec.get("group_by") or [])
+	# Se devuelven en el orden del spec (group_by + alias) para que el resto del
+	# código (porcentajes, tablas) encuentre las columnas donde espera.
+	orden = _columnas_salida(spec)
+	if set(orden) <= set(columnas):
+		filas = [[fila[columnas.index(c)] for c in orden] for fila in filas]
+		columnas = orden
+	return {"columnas": columnas, "filas": filas, "cobertura": {}}
 
 
-def _unir_rezagadas(base, rez, dimensiones):
-	"""Une la consulta de rezagadas a la principal por la dimensión del group_by."""
+def _unir_medidas(base, otros, dimensiones):
+	"""Une a la consulta principal las medidas de la consulta de recolección.
+
+	La clave es la dimensión del group_by. Las medidas que solo existen en
+	"otros" se agregan con 0 en las filas de la principal, y los grupos que solo
+	aparecen por recolección se agregan con las medidas de ingreso en 0 (los
+	descarta después `_porcentajes` porque no tienen ingresadas que medir).
+	"""
 	col_b = list(base["columnas"])
-	col_r = list(rez["columnas"])
-	if ALIAS_REZAGADAS not in col_r:
+	col_o = list(otros["columnas"])
+	medidas = [c for c in col_o if c not in dimensiones]
+	if not medidas:
 		return base["filas"], col_b
-	valor_rez = lambda fila: fila[col_r.index(ALIAS_REZAGADAS)] or 0
 	if not dimensiones:
-		# Sin desglose hay una sola fila: la rezagada va en la misma.
-		fila = list(base["filas"][0]) + [0] if base["filas"] else [0] * len(col_b)
-		if rez["filas"]:
-			fila[-1] = valor_rez(rez["filas"][0])
-		return [fila], col_b + [ALIAS_REZAGADAS]
-	if any(d not in col_b or d not in col_r for d in dimensiones):
+		fila = list(base["filas"][0]) if base["filas"] else [0] * len(col_b)
+		fila += [0] * len(medidas)
+		if otros["filas"]:
+			for j, c in enumerate(medidas):
+				fila[len(col_b) + j] = otros["filas"][0][col_o.index(c)] or 0
+		return [fila], col_b + medidas
+	if any(d not in col_b or d not in col_o for d in dimensiones):
 		return base["filas"], col_b
 	idx_b = [col_b.index(d) for d in dimensiones]
-	idx_r = [col_r.index(d) for d in dimensiones]
+	idx_o = [col_o.index(d) for d in dimensiones]
 	filas, pos = [], {}
 	for fila in base["filas"]:
-		clave = tuple(fila[i] for i in idx_b)
-		pos[clave] = len(filas)
-		filas.append(list(fila) + [0])
-	for fila in rez["filas"]:
-		clave = tuple(fila[i] for i in idx_r)
-		valor = valor_rez(fila)
+		pos[tuple(fila[i] for i in idx_b)] = len(filas)
+		filas.append(list(fila) + [0] * len(medidas))
+	for fila in otros["filas"]:
+		clave = tuple(fila[i] for i in idx_o)
+		valores = [fila[col_o.index(c)] or 0 for c in medidas]
 		if clave in pos:
-			filas[pos[clave]][-1] = valor
+			i = pos[clave]
+			for j, v in enumerate(valores):
+				filas[i][len(col_b) + j] = v
 			continue
-		# Grupo que solo aparece por rezagadas (sus ingresos son anteriores al
-		# período): se agrega con las medidas en 0. `_porcentajes` lo descarta
-		# porque no tiene ingresadas que medir.
 		nueva = [0] * len(col_b)
-		for i_b, i_r in zip(idx_b, idx_r):
-			nueva[i_b] = fila[i_r]
-		nueva.append(valor)
+		for i_b, i_o in zip(idx_b, idx_o):
+			nueva[i_b] = fila[i_o]
+		nueva += valores
 		pos[clave] = len(filas)
 		filas.append(nueva)
-	return filas, col_b + [ALIAS_REZAGADAS]
-
+	return filas, col_b + medidas
 
 
 def _docname_aseguradora(valor, mapa):
@@ -242,6 +297,18 @@ def _col(tabla, campo):
 		from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import expresion_region
 
 		return expresion_region()
+	if tabla == "tabPieza" and campo == "mes":
+		# YYYY-MM del ingreso. El %% es obligatorio: frappe hace `query % args` y
+		# un %Y pelado rompe con ValueError.
+		return f"DATE_FORMAT(`{tabla}`.`fechaingreso`, '%%Y-%%m')"
+	if tabla == "tabPieza" and campo == "pais_origen":
+		# País de origen de la marca (Marcas.cat_origen es Link a Catalogo Datos).
+		# Pieza.marca guarda "Nissan" y el maestro "NISSAN": se compara en mayúsculas.
+		return (
+			"(SELECT `tabCatalogo Datos`.`descripcion` FROM `tabMarcas`"
+			" JOIN `tabCatalogo Datos` ON `tabCatalogo Datos`.`name` = `tabMarcas`.`cat_origen`"
+			f" WHERE `tabMarcas`.`name` = UPPER(`{tabla}`.`marca`) LIMIT 1)"
+		)
 	if tabla == "tabTaller" and campo == "estado":
 		from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import expresion_estado
 
@@ -274,7 +341,7 @@ def _col(tabla, campo):
 
 
 def _es_virtual(tabla, campo):
-	if tabla == "tabPieza" and campo == "region_pais":
+	if tabla == "tabPieza" and campo in ("region_pais", "pais_origen", "mes"):
 		return True
 	if campo == "estado" and tabla in ("tabRecoleccion", "tabTaller"):
 		return True
@@ -383,13 +450,12 @@ def _params_de(cond):
 
 
 def _sanear_like(valor):
-	"""Permite % solo como comodín inicial/final; escapa el resto."""
-	valor = str(valor).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-	izq = valor.startswith("\\%")
-	der = valor.endswith("\\%") and len(valor) > 2
-	nucleo = valor[2:] if izq else valor
-	nucleo = nucleo[:-2] if der else nucleo
-	return f"{'%' if izq else ''}{nucleo}{'%' if der else ''}"
+	"""Los % son comodines en cualquier posición; escapa `_` y la barra invertida.
+
+	El dueño pidió el 2026-11-06 filtrar por partes compuestas
+	("piezades LIKE 'FACIA%DEL%'"), así que el % interno también es comodín.
+	"""
+	return str(valor).replace("\\", "\\\\").replace("_", "\\_")
 
 
 def _columnas_salida(spec):
@@ -421,6 +487,12 @@ def _limite_sql(spec):
 	# "No recuperadas" también se ordena en Python por la suma de las tres
 	# categorías: con el limit del modelo se perdían grupos antes de sumar.
 	if {"no_recolectadas", "inconsistentes_no_recolectadas", "rezagadas_no_recolectadas"} <= alias:
+		return max(spec["limit"], _max_limit())
+	# Ranking con filtro (una medida con "filtros" propia: "piezas no
+	# localizadas por taller"): el COUNT da 0 en los grupos sin ninguna, MySQL
+	# devuelve esos ceros mezclados y `explain` los descarta DESPUÉS del LIMIT,
+	# así que el desglose salía con una sola fila. Se traen todos los grupos.
+	if any(a.get("filtros") for a in aggs):
 		return max(spec["limit"], _max_limit())
 	return spec["limit"]
 
@@ -532,7 +604,19 @@ def _cobertura(tabla, spec, where, params, universo):
 		campo_f
 		for a in spec["aggregations"]
 		for campo_f, cond in (a.get("filtros") or {}).items()
-		if any(s[:2] == ["is", "null"] for s in _subcondiciones(cond) if isinstance(s, list))
+		if any(
+			# El campo VACÍO es la categoría (pendientes) y el campo con un valor
+			# fijo o una lista también define la población (id_estatus = 206 en
+			# "piezas no localizadas", recolectable = 1). En los dos casos el
+			# nulo no es un dato faltante y no se avisa como cobertura.
+			isinstance(sub, list)
+			and sub
+			and (
+				(sub[0] == "is" and len(sub) > 1 and sub[1] == "null")
+				or sub[0] in ("=", "in")
+			)
+			for sub in _subcondiciones(cond)
+		)
 	}
 	campos = [c for c in campos if c not in como_categoria]
 	if not campos or not universo:

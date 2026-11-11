@@ -17,6 +17,20 @@ VIRTUALES = {
 			"label": "Región del país",
 			"fieldtype": "Virtual",
 			"origen": "estadolocalidad",
+		},
+		# El país de origen no está en Pieza: lo trae la marca (Marcas.cat_origen
+		# → Catalogo Datos.descripcion). Se resuelve con una subconsulta sobre
+		# UPPER(marca) porque Pieza guarda "Nissan" y el maestro "NISSAN".
+		"pais_origen": {
+			"label": "País de origen",
+			"fieldtype": "Virtual",
+			"origen": "marca",
+		},
+		# Mes de ingreso (YYYY-MM), para series y crecimiento.
+		"mes": {
+			"label": "Mes de ingreso",
+			"fieldtype": "Virtual",
+			"origen": "fechaingreso",
 		}
 	},
 	"Recoleccion": {

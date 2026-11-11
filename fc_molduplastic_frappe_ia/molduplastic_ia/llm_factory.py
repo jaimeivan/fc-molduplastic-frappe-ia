@@ -82,6 +82,15 @@ tiempo completa "YYYY-MM-DD HH:MM:SS":
   "ayer"                 ayer 00:00:00 hasta ayer 23:59:59
   "la última semana"     los últimos 7 días completos, incluido hoy
   "los últimos 30 días"  hoy menos 29 días 00:00:00 hasta hoy 23:59:59
+
+Trimestres y cuatrimestres (el dueño los pidió el 2026-11-07): el año se divide
+en 4 TRIMESTRES de 3 meses (1er: ene-mar, 2do: abr-jun, 3er: jul-sep, 4to:
+oct-dic) y en 3 CUATRIMESTRES de 4 meses (1er: ene-abr, 2do: may-ago, 3er:
+sep-dic). "Primer/segundo/tercer/cuarto trimestre" y "primer/segundo/tercer
+cuatrimestre" son esos bloques del año que diga la pregunta (o del año en
+curso); "trimestre actual", "este trimestre" y "cuatrimestre actual" son el
+bloque de hoy (hasta hoy, como "este mes"). Si pones el between, que sea el del
+bloque completo: día 1 00:00:00 del primer mes al último día 23:59:59.
 Si la pregunta no fija un período, NO lo dejes sin filtro: usa el mes
 actual sobre fechaingreso, del día 1 a hoy 23:59:59. "Dame el total de
 piezas" sin más significa el total de piezas que ingresaron este mes, no el
@@ -146,31 +155,36 @@ con recolectable = 1); el spec exacto va más abajo.
 "Dame el resumen de piezas" (a secas, o "de este mes") pide OCHO cifras en
 una sola consulta, con "filters" global VACÍO y la condición completa en cada
 agregación.
+"El resumen de piezas entre el mes anterior y el mes actual" es UN SOLO rango,
+no dos resúmenes: fecha inicio = primer día del mes anterior, fecha fin =
+último día del mes en curso. La app lo fija en las agregaciones; no lo partas
+en dos consultas ni dejes solo el mes actual.
 
 "¿Cómo va la recolección de mis piezas este mes?", "¿cómo va la recolección?",
 "¿cómo vamos con las recolecciones?" y "estado de la recolección del mes" piden
 EXACTAMENTE el mismo spec de ocho agregaciones: son la misma pregunta de
 negocio. El período es el que traiga la frase y, si no trae ninguno, el mes en
-curso. No contestes solo con "recolectadas": sin las seis categorías de ingreso
-y las dos de recolección no se ve cómo va nada.
+curso. Consulta todas las categorías (no solo "recolectadas"): la presentación
+recorta a cuatro filas, pero el spec lleva las ocho para que el chat pueda
+mostrar el detalle si se pide.
 
 Las seis primeras llevan el between sobre fechaingreso; las dos últimas, sobre
 fecha_hora_recoleccion:
   1. total / ingresadas   (fechaingreso between + recolectable = 1)
-  2. recolectadas         (lo anterior + definición estricta)
+  2. recolectadas         (A + B: ingresó en el período con estatus 100 y fecha + recolectada en el período con ingreso anterior)
   3. no recolectadas      (lo anterior + su definición)
   4. pendientes           (lo anterior + su definición)
   5. inconsistentes recolectadas      (fechaingreso between + su definición)
   6. inconsistentes no recolectadas   (fechaingreso between + su definición)
   7. rezagadas recolectadas           (recolección between + su definición)
   8. rezagadas no recolectadas        (recolección between + su definición)
-Son 8 agregaciones, el máximo permitido. Las seis primeras CIERRAN: suman el
-total de ingresadas. Las dos rezagadas NO entran en esa suma: miden piezas de
-meses anteriores y suman entre ellas el total recolectado del período. Si
-piden solo algunas categorías, pide solo esas; si piden "el resumen" o
-"cómo va la recolección" sin detallar, van las ocho. Quien explica las parte en
-dos tablas. Las de "recolectable" van en común: si al total le quitas el
-recolectable y a las otras no, las cifras ya no son comparables.
+La app arma el resumen con DIEZ agregaciones: las tres de la unión
+("recolectadas", "recolectadas_inconsistentes" y "recolectadas_periodo") y las
+siete restantes. En la tabla NO
+muestres las dos de la unión por separado: la fila "Recolectadas" usa el campo
+"recuperadas" de los datos (A + B). Las
+rezagadas NO se suman con las de ingreso: miden piezas de meses anteriores. Las
+de "recolectable" van en común.
 
 "Muestra el precio en pesos de las piezas por categoría" (o "el valor de las
 piezas por categoría", "cuánto valen las piezas por categoría") pide esas
@@ -181,15 +195,20 @@ del resumen, no el tipo de carga. Son otras ocho agregaciones, el máximo; el
 reparto en dos tablas por base de fecha es el mismo y la segunda columna se
 llama "Valor".
 
-Definición ESTRICTA de "recolectada": úsala siempre, nunca la versión floja de
-"solo tiene fecha de recolección". Son tres condiciones: id_estatus = 100 (en el
-catálogo Estatus, 100 es "Recolectado"), la fecha_hora_recoleccion en el MISMO
-mes que el fechaingreso, y la fecha_hora_recoleccion igual o posterior al
-fechaingreso. El período va en "filters" global y las tres en el "filtros" de
-la agregación:
-  "filtros": {{"id_estatus": ["=", 100],
-              "fecha_hora_recoleccion": [["mes_igual", {{"campo": "fechaingreso"}}],
-                                         [">=", {{"campo": "fechaingreso"}}]]}}
+Definición de "recolectada" (dueño, 2026-10-31): suma de tres categorías
+disjuntas, cada una con su base de fecha:
+  A1 "recolectadas en periodo" = fechaingreso en el período, id_estatus = 100,
+      recolectable = 1, fecha_hora_recoleccion en el MISMO mes y no anterior al
+      ingreso.
+  A2 inconsistentes recolectadas = fechaingreso en el período, id_estatus = 100,
+      recolectable = 1, fecha_hora_recoleccion ANTERIOR al ingreso.
+  B rezagadas recolectadas = fecha_hora_recoleccion en el período, fechaingreso
+      ANTERIOR al período, id_estatus = 100, recolectable = 1.
+Recolectadas = A1 + A2 + B (en periodo + inconsistentes + rezagadas).
+Van en tres agregaciones —"recolectadas" (A1), "recolectadas_inconsistentes"
+(A2) y "recolectadas_periodo" (B)—, cada una con su período en su "filtros"; la
+suma la calcula la app, no la hagas tú. Ya no se exige el mismo mes ni que la
+recolección sea posterior al ingreso.
 Definición de INCONSISTENTE RECOLECTADA (dicen "inconsistentes", "piezas
 inconsistentes", "inconsistentes recolectadas"): son tres condiciones: la pieza
 entró en el período (between sobre fechaingreso), la fecha_hora_recoleccion es
@@ -248,8 +267,9 @@ fechaingreso: mide piezas de meses anteriores. Rezagadas recolectadas y
 rezagadas no recolectadas sí son entre sí excluyentes y suman el total de
 recolectadas del período.
 
-Definición de NO RECOLECTADA (también "no recolectadas", "no entregadas" —es
-el mismo sinónimo— y "no se recogieron"): son cuatro condiciones a la vez: la pieza entró en el período
+Definición de NO RECOLECTADA (también "no recolectadas en periodo" —el nombre
+que usa el chat—, "no recolectadas", "no entregadas" —es el mismo sinónimo— y
+"no se recogieron"): son cuatro condiciones a la vez: la pieza entró en el período
 (between sobre fechaingreso), recolectable = 1, la fecha_hora_recoleccion igual
 o posterior al fechaingreso, y id_estatus dentro de la lista
 ["in", [200, 201, 202, 203, 204, 205, 206]], que en el catálogo Estatus es:
@@ -282,19 +302,22 @@ recolectar, hazlo aparte (total menos recolectadas) y explica de qué categoría
 Buena parte de la información tiene fecha_hora_recoleccion anterior al ingreso o
 de otro mes; eso no cuenta como recolectada.
 
-Definición de NO RECUPERADAS ("no recuperadas", "piezas no recuperadas"): es la
-suma de tres categorías del período, cada una con su propia base de fecha: no
-recolectadas (fechaingreso between + su definición), inconsistentes no
-recolectadas (fechaingreso between + su definición) y rezagadas no recolectadas
-(recolección between + su definición). Devuelve TRES count(*) con alias
+Definición de NO RECOLECTADAS (el total; "no recuperadas" y "no entregadas" son
+sinónimos): es la suma de tres categorías del período, cada una con su propia
+base de fecha: no recolectadas en periodo (fechaingreso between + su
+definición), inconsistentes no recolectadas (fechaingreso between + su
+definición) y rezagadas no recolectadas (recolección between + su definición). Devuelve TRES count(*) con alias
 "no_recolectadas", "inconsistentes_no_recolectadas" y
 "rezagadas_no_recolectadas", con "filters" global VACÍO y la condición completa
 de cada una en su "filtros" (las dos primeras sobre fechaingreso, la rezagada
 sobre fecha_hora_recoleccion). La app suma las tres y publica la cifra: no la
 sumes tú. Para "no recuperadas por taller/región/..." pon el group_by; la app
 suma por grupo. Si piden los motivos ("motivos de no entrega más frecuentes"),
-usa el mismo spec con group_by ["motivo"]; si el campo viene vacío, la fila sale
-"Sin motivo".
+usa el mismo spec con group_by ["id_estatus"]: el campo Pieza.motivo está vacío en
+toda la base y lo único que distingue esas piezas es su estatus del catálogo
+(200 No recolectado, 201 Vehículo en reparación, 202 Pérdida total, 203 Pago de
+daños, 204 Incidencia, 205 Otros, 206 Pieza no localizada). La app traduce el id
+a su nombre antes de la respuesta: no escribas el número.
 
 Recolección (doctype "Recoleccion"): NO tiene campo "aseguradora" (el tenant se
 aplica vía Pieza.id_recoleccion). Sus estados en el catálogo son 300 Pendiente,
@@ -350,7 +373,8 @@ Ojo con el nombre de cada campo: plaza es id_plaza (Link a Taller-Plazas; no
 existe un campo "plaza"), taller es taller_asignado, parte es parte_pieza, y
 "tipo de pieza" o "tipo de autoparte" también es parte_pieza (el campo "tipo"
 es el modelo del vehículo, no el tipo de pieza; no agrupes por piezades, que es
-la descripción con lado). "Submarca" (o "modelo del vehículo") SÍ es el campo
+la descripción con lado). "Refacción"/"refacciones" y "misma pieza" son lo
+mismo que "parte"/"tipo de pieza": agrupa por parte_pieza. "Submarca" (o "modelo del vehículo") SÍ es el campo
 "tipo" ("muestra la efectividad por submarca" → group_by ["tipo"]); "modelo" es
 el año (numérico) y no la submarca.
 "muestra las piezas por tipo CDR" (o "por tipo_carga") es este caso con
@@ -377,11 +401,18 @@ más" → 200). No lo pongas en filters ni lo uses como filtro de fecha:
 es un HAVING sobre el conteo y lo aplica la app después de agrupar. Sin número,
 omite la clave y van todas las filas. Ojo: si el número es cuántas filas quiere
 ("los 10 mejores talleres", "top 5"), eso es limit, no min_ingresadas.
+**Singular y plural no son lo mismo** (dueño, 2026-11-05): "¿cuál es …?" pide
+UNA fila (`"limit": 1`; "¿cuál es la marca con menor efectividad?", "¿cuál es el
+taller con más piezas?"), mientras que "¿cuáles son …?" pide la lista/tabla
+(`"limit": 10` si no dan N; "¿cuáles son las marcas con menor efectividad?").
+Sin esas frases, manda la regla de siempre: N explícito o, en la peor/mejor
+efectividad, una sola fila.
+
 "¿Qué tipo de pieza se recolecta menos?" (o "qué parte se recolecta menos",
 "qué taller recolecta menos", "dónde se recolecta menos") NO es un conteo de
 recolectadas: es la efectividad por esa dimensión —el spec de cuatro cifras de
 más abajo con group_by de la dimensión, order_by sobre "recolectadas" asc y
-"limit": 10 ("más/mejor" → desc)—. Si la pregunta no da un número de piezas,
+"limit": 1 ("¿cuáles son …?" → 10) ("más/mejor" → desc)—. Si la pregunta no da un número de piezas,
 agrega "min_ingresadas": 50 para que el porcentaje no salga de una o dos
 piezas; la explicación aclara el corte. Con período, el que traiga; sin
 período, el mes actual (día 1 a hoy).
@@ -436,6 +467,13 @@ efectividad?" son la misma pregunta de cuatro cifras del período (sin período,
 el mes en curso): no hace falta que digan la cifra, la comparación es contra
 {objetivo_efectividad}% y la hace la explicación. No inventes un porcentaje
 calculado ni filtres por él en el SQL.
+Toda pregunta que mida qué parte de las piezas se recolectó es esta misma
+efectividad, aunque no diga "efectividad": "tasa de recolección", "nivel de
+recolección", "índice de recolección", "cumplimiento de recolección", "avance de
+la recolección", "porcentaje recolectado", "porcentaje de piezas recolectadas",
+"¿cuánto se recolectó de lo que ingresó?", "recolectadas contra ingresadas". El
+numerador son SIEMPRE las piezas recolectadas (en periodo + inconsistentes +
+rezagadas), nunca un conteo suelto de piezas ni las recolecciones pendientes.
 Las dimensiones usan el nombre real del campo: "dame el porcentaje de
 efectividad por taller" → group_by ["taller_asignado"]; "por plaza" →
 ["id_plaza"]; "por región" → ["region_pais"]; "por tipo CDR" → ["tipo_carga"].
@@ -448,8 +486,11 @@ aplica ese corte antes de recortar el top.
 No la uses si una sola condición global ya resuelve el caso: "filtros" es para
 la excepción, no para lo normal.
 
-Sinónimos: CDR es taller. "No entregadas" es lo mismo que "no recolectadas"
-(usa su definición completa). Si preguntan por CDR, usa taller_asignado
+"Volumen" es sinónimo de "piezas ingresadas": "volumen por marca" = count(*) de
+las piezas que ingresaron en el período (recolectable = 1), agrupado por marca.
+Sinónimos: CDR es taller. "No recolectadas" (el total) es la suma de no
+recolectadas en periodo + inconsistentes no recolectadas + rezagadas no
+recolectadas; "no recuperadas" y "no entregadas" son sinónimos de ese total. Si preguntan por CDR, usa taller_asignado
 o el DocType Taller según el caso. "Totales" es sinónimo de "ingresadas":
 "los totales", "los totales de piezas", "cuántas piezas van de totales" o
 "el total de piezas" quieren decir las piezas que INGRESARON, así que el
@@ -459,6 +500,76 @@ Un total SOLO cuenta piezas con recolectable = 1: pon esa condición siempre,
 queda en "filters" global). No lo leas como "total de la base" (histórico) ni
 como "suma de preciovale": solo cuenta piezas recolectables. Si piden
 "totalizado" o "suma", entonces sí preciovale.
+Si los Datos traen "tabla_servidor": true (listado de piezas pendientes por
+prioridad), NO escribas la tabla ni comentes su contenido: responde solo con el
+encabezado (título, línea en blanco y período si viene). La app pinta la tabla
+con sus encabezados exactos (Siniestro, Marca, Modelo, Submarca, Nombre pieza,
+Precio), así que no la repitas ni la reordenes.
+"Prioridad de las piezas pendientes" (o "qué piezas pendientes atender primero") es
+un top 10 por precio: fields ["siniestro", "marca", "modelo", "tipo",
+"piezades", "preciovale"] con la definición de pendiente en "filters" (id_estatus
+vacío, fecha_hora_recoleccion vacía, recolectable = 1), order_by preciovale desc y
+limit 10. **Sin período en la pregunta se asume el mes en curso**; si la frase
+trae período, se acota a él. Sin agregaciones. La explicación
+transcribe la tabla con esas seis columnas y EXACTAMENTE estos encabezados, en
+este orden: "Siniestro", "Marca", "Modelo", "Submarca", "Nombre pieza", "Precio".
+No los cambies por "Tipo", "Pieza" ni "Valor": "Submarca" es el campo "tipo",
+"Nombre pieza" es "piezades" y "Precio" es "preciovale" (con formato $ y dos
+decimales). No reordenes las filas (ya vienen de mayor a menor precio). La app
+arma el spec.
+"¿Qué siniestros tienen piezas pendientes?" (o "pendientes todavía") se contesta
+con un renglón por siniestro: group_by ["siniestro"], count(*) con alias
+"pendientes" y los filtros de pendiente (id_estatus vacío, fecha_hora_recoleccion
+vacía, recolectable = 1), order_by desc por "pendientes" y limit 50. **Toda
+pregunta sobre siniestros asume el mes actual**: sin período, el between sobre
+fechaingreso es el del mes en curso; si la frase trae período, manda el suyo. La
+app arma el spec.
+"¿Cuántos siniestros puede manejar un CDR?" sí está dentro del alcance: CDR
+significa taller/Centro de Reparación. Cuenta los siniestros DISTINTOS asociados
+a cada taller con count_distinct(siniestro), group_by ["taller_asignado"] y
+fechaingreso del mes actual si no se indica período. Esto informa cuántos
+siniestros aparecen realmente asignados a cada CDR en los datos; no es una
+capacidad máxima teórica ni una estimación. La app arma este spec aunque la
+pregunta se haya clasificado inicialmente como fuera de alcance.
+"¿Qué años modelo aparecen más en los siniestros?" se contesta con
+count_distinct(siniestro) alias "siniestros", group_by ["modelo"] (el año del
+vehículo), order_by desc, limit 10 y el período sobre fechaingreso con
+{{"modelo": ["is", "not null"]}} (sin período, el mes en curso). La tabla lleva
+"Modelo" y "Siniestros"; la app arma el spec y pinta la tabla.
+"¿Cómo ha crecido el número de siniestros?" (crecimiento, evolución o variación de
+siniestros) se contesta con count_distinct(siniestro) alias "siniestros",
+group_by ["mes"] (campo virtual: YYYY-MM de fechaingreso), order_by mes asc y el
+período sobre fechaingreso (sin período, lo que va del año). La app calcula la
+variación mes a mes y pinta la tabla Mes | Siniestros | Variación.
+"¿De qué país de origen son los autos con más siniestros?" se contesta con
+count_distinct(siniestro) alias "siniestros", group_by ["pais_origen"] (campo
+virtual: marca → Marcas.cat_origen → Catalogo Datos), order_by desc, limit 10 y
+el período sobre fechaingreso (sin período, el mes en curso). La tabla lleva
+"País de origen" y "Siniestros"; la app arma el spec y pinta la tabla.
+"¿Qué marcas/submarcas se accidentan más por mes?" se contesta con un top de
+siniestros: count_distinct(siniestro) con alias "siniestros", group_by ["marca"]
+(o ["tipo"] si piden submarcas), order_by desc por "siniestros", limit 10 y el
+período (sin período, el mes en curso) sobre fechaingreso con
+{{"recolectable": ["=", 1]}}. La tabla lleva "Marca"/"Submarca" y "Siniestros";
+la app arma el spec y pinta la tabla.
+"¿Cuántas piezas tiene en promedio un siniestro de X?" se contesta con dos cifras:
+count(*) alias "piezas" y count_distinct(siniestro) alias "siniestros", ambas con
+{{"recolectable": ["=", 1]}} en su "filtros" y el período (sin período, el mes en
+curso) sobre fechaingreso; el filtro de marca/submarca que nombre la pregunta va
+en "filters". Sin group_by. La división la hace la app: tú no calcules el
+promedio.
+"¿Qué submarcas generan más piezas dañadas?" (o "qué submarcas tienen más piezas
+dañadas") NO es un campo de daño: "dañada" es la pieza que ingresó, así que se
+contesta con las piezas ingresadas por submarca — count(*) con
+{{"recolectable": ["=", 1]}} y el período sobre fechaingreso, group_by ["tipo"]
+(la submarca), order_by desc por el alias "ingresadas" y limit 10. La app arma el
+spec. La tabla lleva EXACTAMENTE dos columnas: "Submarca" (el campo tipo) y
+"Ingresadas" (el conteo); no la llames "Piezas" ni "Dañadas".
+"Piezas no localizadas" (o "no localizadas") es el estatus 206 del catálogo
+Estatus (Pieza no localizada): filtro {{"id_estatus": ["=", 206]}} con count(*)
+y el período sobre fechaingreso; si la pregunta trae dimensión ("por taller",
+"por región", "por tipo CDR"), va en group_by con el nombre real del campo. La
+app fija el filtro; no lo cambies por "motivo" ni por texto libre.
 tipo_carga guarda el id del catálogo, no el nombre: 10=Taller, 11=Agencia,
 12=Audavales, 13=Equipo Pesado. Si piden por nombre, filtra por el id.
 "tipo CDR" es SIEMPRE el campo tipo_carga. No uses "tipo" para esa pregunta:
@@ -483,8 +594,11 @@ Esquema disponible:
 SYSTEM_EXPLAIN = """Explicas resultados de consultas sobre piezas, recolecciones y
 talleres de una aseguradora. Responde en español, de forma conversacional y
 breve. Nunca inventes cifras: usa solo los datos entregados. Si la pregunta
-pide una sola cifra, responde en una línea con esa cifra y el período; no
-agregues piezas, histórico ni desgloses que nadie pidió. Si los datos
+pide una sola cifra, responde en una línea con esa cifra (el período ya va en el
+encabezado); no agregues piezas, histórico ni desgloses que nadie pidió.
+**Un solo valor o una tabla**: si el resultado es una sola cifra (una fila, una
+medida, sin desglose), contéstalo en una línea y NO escribas tabla; si hay más de
+una fila o varias medidas, respóndelo en tabla con las columnas de los datos. Si los datos
 incluyen cobertura y algún campo está por debajo del 100%, advierte qué
 porcentaje tenía información; si no viene cobertura, no la menciones ni
 supongas que faltan datos.
@@ -512,13 +626,31 @@ A "número de siniestros de este mes" le corresponde fechaingreso (las piezas
 que entraron este mes); a "piezas recolectadas este mes", fecha_hora_recoleccion.
 Si la pregunta no distingue, usa el que corresponde al sustantivo principal.
 
+Encabezado obligatorio de TODA respuesta, en dos líneas separadas por una línea
+en blanco (si van pegadas, el Markdown las une y se ve todo en un renglón):
+  - PRIMERA línea: el título de lo que se muestra, que viene en los Datos como
+    "titulo" (tal cual, sin agregarle la aseguradora ni el período).
+  - Línea en blanco.
+  - SEGUNDA línea: el período, que viene como "periodo" y ya empieza con "Del"
+    ("Del 1 de septiembre de 2026 al 15 de septiembre de 2026", o "… al 30 de
+    septiembre de 2026" para un mes, o "Del 1 de enero de 2026 al 31 de
+    diciembre de 2026" para un año).
+  - Línea en blanco.
+Después va el contenido: la tabla o la cifra. No repitas el período en la tabla
+ni en la frase, no cambies el formato ni el orden de esas líneas y no las omitas
+en ninguna pregunta que traiga "periodo". Si la consulta no tiene fechas (los
+Datos no traen "periodo", p. ej. "qué siniestros tienen piezas pendientes"), va
+solo el título y debajo el contenido, sin segunda línea.
+
 tipo_carga ya viene con el nombre del catálogo (Taller, Agencia, Audavales,
 Equipo Pesado): muéstralo tal cual y nunca escribas el id numérico.
 
 Desglose (los datos traen "desglose": true, o sea la consulta agrupó por una
-dimensión): una línea con el período y debajo una tabla de dos columnas —la
-dimensión y la medida ("Tipo CDR" y "Piezas")— con una fila por grupo, aunque
-haya un solo grupo. Respeta el orden de las filas tal como vienen en los datos
+dimensión): debajo del encabezado va una tabla de dos columnas —la
+dimensión y la medida— con una fila por grupo, aunque haya un solo grupo. La
+primera columna lleva el nombre de la dimensión ("Tipo CDR", "Taller", "Región")
+y la segunda el de la medida tal como viene en los datos ("No localizadas",
+"Recolectadas", "Valor"); "Piezas" solo si es un conteo genérico, nunca "Total". Respeta el orden de las filas tal como vienen en los datos
 (campo "orden": ya están de mayor a menor); no las reordenes, no las alfabetices
 y no agregues fila de total. Si "total_filas" es mayor que "mostradas", cierra
 con UNA línea: con "corte": "top", "Se muestran los N primeros de M grupos";
@@ -532,13 +664,19 @@ primer renglón es 0, no hay ningún grupo que cumpla la condición ("qué talle
 concentran más piezas no entregadas" sin ninguna): contesta en UNA línea que no
 hay grupos con eso en el período y NO pintes la tabla con los ceros.
 
-No recuperadas: si los datos traen "no_recuperadas" (o
-"no_recuperadas_por_fila"), NO sumes: esa cifra ya es no recolectadas +
-inconsistentes no recolectadas + rezagadas no recolectadas del período. Sin
-desglose, una línea con la cifra y el período; con desglose, la tabla de la
-dimensión y "No recuperadas", en el orden recibido (si la dimensión es
-"motivo", la primera columna se llama "Motivo"). Si todas las filas dicen
-"Sin motivo", agrega una línea avisando que el motivo no está capturado.
+Recolectadas: si la pregunta pide cuántas piezas recolectadas hay y los datos
+traen "recuperadas", la cifra es "recuperadas" (recolectadas en periodo +
+inconsistentes recolectadas + rezagadas). No uses las columnas recolectadas /
+recolectadas_inconsistentes / recolectadas_periodo por separado ni las sumes.
+
+No recolectadas: si los datos traen "no_recuperadas" (o
+"no_recuperadas_por_fila"), NO sumes: esa cifra ya es no recolectadas en periodo
++ inconsistentes no recolectadas + rezagadas no recolectadas del período. Sin
+desglose, una línea con la cifra (el período va en el encabezado); con
+desglose, la tabla de la dimensión y "No recolectadas", en el orden recibido (si la dimensión es
+"id_estatus", la primera columna se llama "Estatus" y las filas ya traen el
+nombre del catálogo, no el id). Después de la tabla no agregues ninguna línea:
+ni avisos del motivo, ni totales al pie.
 
 Listado sin cifras: si los datos traen "sin_cifras": true, la pregunta pide
 nombres, no medidas ("lista las plazas por región", "enumera los talleres").
@@ -549,16 +687,16 @@ JUAREZ"), respétala tal cual: no la reordenes ni la deshagas en varias filas.
 Nunca escribas una cifra en este caso.
 
 Efectividad: si los datos traen "porcentajes", NO hagas la cuenta: usa esos
-valores tal cual (traen grupo, total, recuperadas, recolectadas_estrictas,
-inconsistentes_recolectadas, rezagadas_recolectadas, pct y vs_objetivo). Ojo:
-"recuperadas" es la SUMA de las tres categorías (recolectadas estrictas +
-inconsistentes recolectadas + rezagadas recolectadas), o sea el numerador que
-se divide entre "total"; la columna "Recuperadas" de la tabla es esa suma y el
-porcentaje puede pasar de 100% porque las rezagadas entraron en meses
-anteriores. "Recolectadas" a secas es solo la categoría estricta
-(recolectadas_estrictas): no la uses como numerador. No recortes ni "corrijas"
-la cifra. Con
-desglose, tabla de CINCO columnas —dimensión, "Ingresadas", "Recuperadas",
+valores tal cual (traen grupo, total, recuperadas, recolectadas_ingreso,
+recolectadas_periodo, pct y vs_objetivo). Ojo:
+"recuperadas" es la suma de las tres categorías (recolectadas en periodo +
+inconsistentes recolectadas + rezagadas recolectadas), o sea el numerador
+que se divide entre "total"; la columna "Recolectadas" de la tabla es esa cifra
+y el porcentaje puede pasar de 100% porque las rezagadas ingresaron en meses
+anteriores. La columna se llama "Recolectadas" (en periodo + inconsistentes + rezagadas);
+no la sumes ni la recalcules. No recortes
+ni "corrijas" la cifra. Con
+desglose, tabla de CINCO columnas —dimensión, "Ingresadas", "Recolectadas",
 "Efectividad" y "Objetivo"— con una fila por grupo y el mismo orden en que vienen
 las filas; el porcentaje con un decimal y el signo %; en "Objetivo" escribe el
 texto de "vs_objetivo" de esa fila ("Por encima", "Por debajo" o "En el
@@ -569,13 +707,11 @@ dimensión de la pregunta ("Tipos de pieza con 100 o más ingresadas — 2026",
 "talleres" si la dimensión es otra. El filtro ya viene aplicado: no
 borres ni agregues filas por tu cuenta. Sin desglose, una línea con el
 porcentaje y la diferencia en puntos contra "objetivo_efectividad" (un decimal,
-diciendo si está por encima o por debajo): "111.4% (4,527 recuperadas de 4,064
+diciendo si está por encima o por debajo): "111.4% (4,527 recolectadas de 4,064
 ingresadas). Está 36.4 puntos por encima del objetivo de 75%". Si todas las
 filas dan 0%, agrega UNA línea al final
-recordando cómo se mide la efectividad —(recuperadas = recolectadas estrictas +
-inconsistentes recolectadas + rezagadas recolectadas) / ingresadas, con la
-definición estricta
-de recolectada—, porque el 0 no es un error de cálculo. Nada más.
+recordando cómo se mide la efectividad —recolectadas = recolectadas en periodo
++ inconsistentes recolectadas + rezagadas recolectadas, sobre ingresadas—, porque el 0 no es un error de cálculo. Nada más.
 
 Si la pregunta compara dos grupos por efectividad ("¿las agencias recolectan
 mejor que los talleres?", "¿quién recolecta más, X o Y?"), cierra con UNA línea
@@ -594,24 +730,45 @@ la tabla: la pregunta pide cuál, no el desglose completo, y los datos traen sol
 ese renglón: no agregues ni nombres a los demás grupos. Si en cambio pide un
 top N ("las 5 partes que menos se recolectan", "los 3 talleres que peor
 recolectan"), no es una sola cifra: contesta con la tabla de cinco columnas
-(dimensión, Ingresadas, Recuperadas, Efectividad y Objetivo) con esas N filas en
+(dimensión, Ingresadas, Recolectadas, Efectividad y Objetivo) con esas N filas en
 el orden recibido, sin prosa antes ni análisis después, y cierra con la línea de
-corte ("Se muestran los 5 primeros de 40 grupos").
+corte ("Se muestran los 5 primeros de 40 grupos"). La excepción es "más se
+recolectan" (plural): esa frase pide la tabla con Ingresadas, Recolectadas y
+Efectividad, no una sola línea; la app la arma y la pinta tal cual.
 
-Resumen de piezas: si la pregunta pide "el resumen de piezas", pregunta
-"¿cómo va la recolección?" (o "cómo vamos con las recolecciones", "estado de la
-recolección del mes") o pide varias categorías juntas, la respuesta son SOLO las
-tablas. Sin preámbulo, sin
-frases de entrada, sin comentarios de análisis y sin párrafo de cierre: nada de
-"aquí va", "ojo con", "llama la atención" ni explicaciones de lo que significan
-las cifras.
+Resumen de piezas: "el resumen de piezas" y "¿cómo va la recolección de mis
+piezas este mes?" (igual que "¿cómo va la recolección?", "cómo vamos con las
+recolecciones" y "estado de la recolección del mes") son la MISMA pregunta y se
+contestan con la MISMA tabla corta de cuatro filas, en este orden: Ingresadas,
+Recolectadas, "No recolectadas" (el campo "no_recuperadas": no recolectadas en
+periodo + inconsistentes no recolectadas + rezagadas no recolectadas) y
+Pendientes. Nada de "No recolectadas en periodo", nada de inconsistentes, nada
+de la tabla de recolección y nada de línea final.
 
-Cómo repartirlas: mira el Spec; el período de cada agregación es el "between"
-que trae en su "filtros" (o en "filters" si es compartido). Between sobre
+Tabla corta: dos columnas, "Categoría" y "Piezas", esas cuatro filas, después
+del encabezado (título + período), sin preámbulo, sin frases de entrada, sin
+comentarios de análisis y sin párrafo de cierre: nada de "aquí va", "ojo con",
+"llama la atención" ni explicaciones de lo que significan las cifras.
+
+Si los Datos traen "periodo" y la pregunta pedía dos meses ("entre el mes
+anterior y el mes actual"), ese rango YA cubre los dos meses en una sola
+consulta: no lo partas en dos tablas y no digas que falta uno de los meses.
+
+EXCEPCIÓN: si los Datos traen "detalle": true (la pregunta dice "detallado",
+"con todas las categorías", "el detalle completo" o "el resumen completo"), NO
+uses la tabla corta: van las dos tablas largas de abajo, con TODAS las
+categorías.
+
+Con "detalle": true —o si la pregunta enumera otras categorías (inconsistentes,
+rezagadas, "todas las categorías")— van las dos tablas largas de abajo. Cómo
+repartirlas: mira el Spec; el período de cada agregación es el "between" que
+trae en su "filtros" (o en "filters" si es compartido). Between sobre
 fechaingreso → primera tabla; sobre fecha_hora_recoleccion → segunda tabla.
 
 Primera tabla, título en una sola línea: "**Piezas por fecha de ingreso**".
-Filas, en este orden: total/ingresadas, recolectadas, no recolectadas,
+Filas, en este orden: "Ingresadas" (el alias total/ingresadas), recolectadas,
+"Recolectadas en periodo" (el campo recolectadas_en_periodo),
+"No recolectadas en periodo" (el alias no_recolectadas se escribe así),
 pendientes, inconsistentes recolectadas, inconsistentes no recolectadas.
 Segunda tabla, título en una sola línea: "**Piezas por fecha de recolección**".
 Filas, en este orden: rezagadas recolectadas, rezagadas no recolectadas.
@@ -623,13 +780,10 @@ cambiando guiones bajos por espacios ("inconsistentes_recolectadas" →
 escribe "Ingresadas", no "Total". Sin fila de total, sin porcentajes y sin
 columna extra.
 
-Al final agrega una tercera tabla, título "**Recuperadas y no recuperadas**":
-dos columnas, "Concepto" y "Piezas", con dos filas —"Recuperadas" (el campo
-"recuperadas" de los datos: recolectadas + inconsistentes recolectadas +
-rezagadas recolectadas) y "No recuperadas" (el campo "no_recuperadas": no
-recolectadas + inconsistentes no recolectadas + rezagadas no recolectadas)—.
-No hagas la suma tú ni las metas en las otras tablas. Con "dinero": true no va
-esta tercera tabla.
+No agregues ninguna línea de cierre después de las tablas: nada de
+"No recolectadas: N" ni de totales al pie. El total agregado ya está en la tabla
+corta, y en las dos tablas largas no se repite fuera de las filas. No hagas la
+suma tú.
 
 Si los datos traen "dinero": true (todas las agregaciones son sum de
 preciovale), la segunda columna se llama "Valor" y cada monto va con signo $,
@@ -637,6 +791,8 @@ separador de miles y dos decimales ($173,224.73); una suma nula se escribe
 $0.00. En ese caso tampoco hay fila de total ni de porcentajes: el valor de
 "ingresadas" ya cierra la suma de las seis categorías de ingreso.
 
+Las tablas NO llevan fila de "Total" ni acumulados: muestra solo las filas de la
+dimensión (ni la app ni tú agregan un total al pie).
 No sumes una tabla con la otra. Si el resultado solo trae categorías de una
 base, muestra solo esa tabla. Si la cobertura de algún campo es menor al 100%,
 agrega UNA sola línea al final con el porcentaje; nada más.
@@ -667,8 +823,11 @@ class OpenAICompatibleAdapter:
 		self.api_key = api_key
 		self.modelo = modelo
 		s = frappe.get_cached_doc("Molduplastic IA Settings")
-		self.timeout = int(s.timeout_llm or 120)
-		self.max_tokens = int(s.max_tokens_respuesta or 4000)
+		# El proxy corta a los 120 s: un timeout mayor no sirve y el chat mostraría
+		# "Error de conexión". Se acota también la respuesta para que el modelo no
+		# gaste minutos (y crédito) escribiendo 8.000 tokens para un spec.
+		self.timeout = min(int(s.timeout_llm or 55), 55)
+		self.max_tokens = min(int(s.max_tokens_respuesta or 4000), 4000)
 		self.costo_in = float(costo_in or 0)
 		self.costo_out = float(costo_out or 0)
 
@@ -760,13 +919,15 @@ def _cadena(pregunta):
 
 
 def _es_compleja(pregunta):
+	"""Solo las preguntas analíticas usan el modelo profundo.
+
+	Los rankings, promedios, desgloses y conteos los arma el código
+	(`_completar_*`), así que el modelo económico basta y responde mucho más
+	rápido (dueño, 2026-11-06: el pro tardaba 20-80 s por llamada).
+	"""
 	p = pregunta.lower()
-	senales = (
-		"promedio", "total", "tendencia", "compara", "analiza", "análisis", "agrupa",
-		"por mes", "por taller", "por marca", "por plaza", "evolución", "máximo",
-		"mínimo", "top", "ranking",
-	)
-	return len(pregunta) > 120 or any(s in p for s in senales)
+	senales = ("compara", "analiza", "análisis", "tendencia", "evolución")
+	return len(pregunta) > 160 or any(s in p for s in senales)
 
 
 def _con_fallback(cadena, fn):
@@ -787,7 +948,17 @@ def _con_fallback(cadena, fn):
 			}
 		except LLMProviderError as e:
 			errores.append(str(e))
-	raise LLMConfigError("Ningún proveedor disponible: " + "; ".join(errores or ["sin configurar"]))
+	detalle = "; ".join(errores or ["sin configurar"])
+	# El caso más común en producción: la cuenta del proveedor se quedó sin
+	# saldo (HTTP 402). Se dice claro y con la acción, en vez de escupir el JSON
+	# del upstream en el chat.
+	if "402" in detalle or "Insufficient account funds" in detalle or "insufficient_quota" in detalle:
+		raise LLMConfigError(
+			"El proveedor de IA no tiene saldo (HTTP 402). Recarga la cuenta en "
+			"Molduplastic IA Settings o configura otro proveedor con clave propia. "
+			f"Detalle: {detalle}"
+		)
+	raise LLMConfigError("Ningún proveedor disponible: " + detalle)
 
 
 def _bloque_contexto(historial):
@@ -881,6 +1052,54 @@ def _mapa_tipo_carga(resultado):
 	return mapa
 
 
+ESTATUS_PIEZA = {
+	"200": "No recolectado",
+	"201": "Vehículo en reparación",
+	"202": "El vehículo fue pérdida total",
+	"203": "Pago de daños",
+	"204": "Incidencia",
+	"205": "Otros",
+	"206": "Pieza no localizada",
+}
+
+
+def _mapa_estatus(resultado):
+	"""Mapa id -> nombre del catálogo Estatus para los valores del resultado."""
+	columnas = [str(c).lower() for c in (resultado.get("columnas") or [])]
+	if "id_estatus" not in columnas:
+		return {}
+	idx = columnas.index("id_estatus")
+	ids = {str(f[idx]) for f in (resultado.get("filas") or []) if f[idx] not in (None, "")}
+	if not ids:
+		return {}
+	mapa = {i: ESTATUS_PIEZA[i] for i in ids if i in ESTATUS_PIEZA}
+	try:
+		for fila in frappe.get_all(
+			"Estatus", filters={"name": ["in", sorted(ids)]}, fields=["name", "nombre"]
+		):
+			if fila.get("nombre"):
+				mapa[str(fila["name"])] = fila["nombre"]
+	except Exception:
+		pass
+	return mapa
+
+
+def _estatus_legible(resultado, filas, mapa):
+	"""Sustituye el id_estatus por el nombre del catálogo antes del modelo.
+
+	"¿Cuáles son los motivos de no entrega más frecuentes?" se contesta con
+	id_estatus (Pieza.motivo está vacío): el id no debe salir a la respuesta.
+	"""
+	columnas = [str(c).lower() for c in (resultado.get("columnas") or [])]
+	if "id_estatus" not in columnas or not mapa:
+		return filas
+	i = columnas.index("id_estatus")
+	return [
+		[mapa.get(str(valor), valor) if j == i else valor for j, valor in enumerate(fila)]
+		for fila in filas
+	]
+
+
 def _tipo_carga_legible(resultado, filas, mapa):
 	"""Sustituye el id de tipo_carga por su nombre antes de que lo vea el modelo.
 
@@ -898,6 +1117,7 @@ def _tipo_carga_legible(resultado, filas, mapa):
 # Cómo se muestra una dimensión vacía. El modelo copiaba "None" a la tabla.
 ETIQUETAS_NULO = {
 	"motivo": "Sin motivo",
+	"pais_origen": "Sin origen",
 	"taller_asignado": "Sin taller asignado",
 	"id_plaza": "Sin plaza",
 	"region_pais": "Sin región",
@@ -931,10 +1151,16 @@ def _filas_legibles(spec, resultado, filas):
 
 
 # Categorías que suman el numerador de la efectividad (decisión del dueño,
-# 2026-10-22): recolectadas estrictas + inconsistentes recolectadas +
+# 2026-10-31): recolectadas en periodo + inconsistentes recolectadas +
 # rezagadas recolectadas. Las rezagadas son piezas que entraron en meses
 # anteriores al período medido, así que el cociente puede pasar de 100%.
-ALIAS_RECUPERADAS = ("recolectadas", "inconsistentes_recolectadas", "rezagadas_recolectadas")
+ALIAS_RECUPERADAS = (
+	"recolectadas",
+	"recolectadas_inconsistentes",
+	"recolectadas_periodo",
+)
+# Specs viejos con la definición estricta (solo compatibilidad de lectura).
+ALIAS_RECUPERADAS_VIEJO = ("recolectadas", "inconsistentes_recolectadas", "rezagadas_recolectadas")
 # "No recuperadas" = suma de las tres categorías no recuperadas (dueño 2026-10-30).
 ALIAS_NO_RECUPERADAS = (
 	"no_recolectadas",
@@ -944,10 +1170,16 @@ ALIAS_NO_RECUPERADAS = (
 
 
 def totales_recuperadas(filas, resultado):
-	"""Suma por fila de las tres categorías recuperadas, o None si no están."""
+	"""Recuperadas por fila: A ∪ B (o la suma de las tres, en specs viejos)."""
 	columnas = [str(c).lower() for c in resultado.get("columnas") or []]
-	indices = [columnas.index(a) for a in ALIAS_RECUPERADAS if a in columnas]
-	if len(indices) != len(ALIAS_RECUPERADAS):
+	if {"recolectadas", "recolectadas_inconsistentes", "recolectadas_periodo"} <= set(columnas):
+		indices = [
+			columnas.index(a)
+			for a in ("recolectadas", "recolectadas_inconsistentes", "recolectadas_periodo")
+		]
+		return [sum((f[i] or 0) for i in indices) for f in filas]
+	indices = [columnas.index(a) for a in ALIAS_RECUPERADAS_VIEJO if a in columnas]
+	if len(indices) != len(ALIAS_RECUPERADAS_VIEJO):
 		return None
 	return [sum((fila[i] or 0) for i in indices) for fila in filas]
 
@@ -961,6 +1193,63 @@ def totales_no_recuperadas(filas, resultado):
 	return [sum((fila[i] or 0) for i in indices) for fila in filas]
 
 
+def _tabla_servidor(spec):
+	"""True para las respuestas cuya tabla pinta la app con encabezados fijos.
+
+	- Prioridad de piezas pendientes (fields con precio y siniestro).
+	- Submarcas con más piezas dañadas (ingresadas por tipo).
+	"""
+	campos = [str(f).lower() for f in spec.get("fields") or []]
+	if not spec.get("aggregations"):
+		return "preciovale" in campos and "siniestro" in campos
+	aggs = [a for a in spec["aggregations"] if isinstance(a, dict)]
+	if spec.get("group_by") in (["marca"], ["tipo"], ["pais_origen"], ["modelo"]):
+		if (
+			len(aggs) == 1
+			and str(aggs[0].get("alias") or "").lower() in ("ingresadas", "siniestros")
+		):
+			return True
+	return (
+		spec.get("group_by") == ["tipo"]
+		and len(aggs) == 1
+		and str(aggs[0].get("alias") or "").lower() == "ingresadas"
+	)
+
+
+def _colapsar_recolectadas(filas, resultado, detalle=False):
+	"""Deja una columna de recolectadas con la suma de las tres categorías.
+
+	El spec trae tres agregaciones (en periodo, inconsistentes y rezagadas); al
+	modelo se le manda una sola columna "recolectadas" para que no elija una de
+	las tres ni las sume mal.
+
+	Con `detalle=True` ("dame el resumen de piezas detallado") se conserva además
+	"recolectadas en periodo" como columna propia: esa categoría no tiene otra
+	fila en el resumen y el dueño la pidió explícita.
+	"""
+	cols = [str(c).lower() for c in resultado.get("columnas") or []]
+	partes = ("recolectadas", "recolectadas_inconsistentes", "recolectadas_periodo")
+	if not set(partes) <= set(cols):
+		return filas, resultado.get("columnas")
+	i_a = cols.index("recolectadas")
+	descartar = tuple(cols.index(a) for a in partes[1:])
+	nuevas = []
+	for fila in filas:
+		total = sum((fila[cols.index(a)] or 0) for a in partes)
+		nueva = [total if j == i_a else v for j, v in enumerate(fila) if j not in descartar]
+		if detalle:
+			# La columna "recolectadas" original es A1 (en periodo); se guarda
+			# como valor aparte para no confundirla con la suma.
+			nueva.insert(i_a + 1, fila[i_a] or 0)
+		nuevas.append(nueva)
+	columnas = [
+		c for j, c in enumerate(resultado.get("columnas") or []) if j not in descartar
+	]
+	if detalle:
+		columnas.insert(i_a + 1, "recolectadas_en_periodo")
+	return nuevas, columnas
+
+
 def _porcentajes(spec, resultado):
 	"""Efectividad por fila: recuperadas / ingresadas, calculada en Python.
 
@@ -970,18 +1259,27 @@ def _porcentajes(spec, resultado):
 	cociente daba 0, prefería no contestar.
 	"""
 	columnas = [str(c).lower() for c in (resultado.get("columnas") or [])]
+	alias = {str(a.get("alias") or "").strip().lower() for a in spec.get("aggregations") or []} - {
+		""
+	}
+	# Solo la efectividad (total + la unión): el resumen también trae "total" y
+	# "recolectadas", y no debe producir porcentajes.
+	if alias and (len(alias) > 4 or "total" not in alias):
+		return []
 	if "recolectadas" not in columnas or len(columnas) < 2:
 		return []
 	i_total = next(
 		(i for i, c in enumerate(columnas) if c in ("total", "ingresadas", "ingresos")),
 		None,
 	)
+	union = {"recolectadas_inconsistentes", "recolectadas_periodo"} <= set(columnas)
+	grupo_alias = ALIAS_RECUPERADAS if union else ALIAS_RECUPERADAS_VIEJO
 	if i_total is None:
 		# Sin alias "total", el denominador es la única columna que no es una
 		# categoría de recuperación ni una dimensión del group_by.
 		dimensiones = {str(g).lower() for g in spec.get("group_by") or []}
 		candidatas = [
-			i for i, c in enumerate(columnas) if c not in ALIAS_RECUPERADAS and c not in dimensiones
+			i for i, c in enumerate(columnas) if c not in grupo_alias and c not in dimensiones
 		]
 		i_total = candidatas[0] if len(candidatas) == 1 else None
 	if i_total is None:
@@ -989,12 +1287,22 @@ def _porcentajes(spec, resultado):
 	dimensiones = [
 		columnas.index(str(g).lower()) for g in (spec.get("group_by") or []) if str(g).lower() in columnas
 	]
-	indices = {c: columnas.index(c) for c in ALIAS_RECUPERADAS if c in columnas}
+	indices = {c: columnas.index(c) for c in grupo_alias if c in columnas}
 	salida = []
 	for fila in resultado.get("filas") or []:
 		total = fila[i_total] or 0
 		partes = {c: fila[i] or 0 for c, i in indices.items()}
-		rec = sum(partes.values())
+		# Definición del dueño (2026-10-30): recolectada = (ingresó en el
+		# período, estatus 100 y con fecha de recolección) ∪ (recolectada en el
+		# período, estatus 100). A y B son disjuntas: A + B.
+		if union:
+			# Estrictas + inconsistentes + rezagadas: son disjuntas.
+			rec = sum(
+				fila[columnas.index(a)] or 0
+				for a in ("recolectadas", "recolectadas_inconsistentes", "recolectadas_periodo")
+			)
+		else:
+			rec = sum(partes.values())
 		pct = round(rec / total * 100, 1) if total else 0.0
 		salida.append(
 			{
@@ -1004,7 +1312,9 @@ def _porcentajes(spec, resultado):
 				"total": total,
 				# Numerador completo: la suma que se divide entre las ingresadas.
 				"recuperadas": rec,
-				"recolectadas_estrictas": partes.get("recolectadas", 0),
+				"recolectadas_ingreso": partes.get("recolectadas", 0),
+			"recolectadas_inconsistentes": partes.get("recolectadas_inconsistentes", 0),
+			"recolectadas_periodo": partes.get("recolectadas_periodo", 0),
 				"inconsistentes_recolectadas": partes.get("inconsistentes_recolectadas", 0),
 				"rezagadas_recolectadas": partes.get("rezagadas_recolectadas", 0),
 				"pct": pct,
@@ -1051,10 +1361,13 @@ _PALABRAS_MEDIDA = (
 	"total",
 	"efectividad",
 	"porcentaje",
+	"por ciento",
+	"%",
 	"monto",
 	"precio",
 	"valor",
 	"pieza",
+	"volumen",
 	"ingresad",
 	"recolect",
 	"recolecc",
@@ -1068,6 +1381,26 @@ _PALABRAS_MEDIDA = (
 )
 
 
+def _pide_detalle(pregunta):
+	"""True para "dame el resumen de piezas detallado": pide TODAS las categorías.
+
+	Sin esto la variante corta (cuatro filas) tapaba el pedido explícito de las
+	ocho categorías, porque el chat recortaba siempre el resumen a Ingresadas,
+	Recolectadas, No recolectadas y Pendientes.
+	"""
+	texto = _sin_tildes(pregunta)
+	return any(
+		frase in texto
+		for frase in (
+			"detallad",
+			"detalle completo",
+			"todas las categorias",
+			"desglose completo",
+			"resumen completo",
+		)
+	)
+
+
 def _es_listado(pregunta):
 	"""True para "lista/dame las plazas por región": pide nombres, no cifras.
 
@@ -1076,6 +1409,22 @@ def _es_listado(pregunta):
 	de este mes" ni "dame los 10 talleres con más piezas".
 	"""
 	texto = _sin_tildes(pregunta)
+	# "tipo de pieza" es una dimensión, no la medida "pieza".
+	for frase in (
+		"tipos de piezas",
+		"tipos de pieza",
+		"tipo de piezas",
+		"tipo de pieza",
+		"tipos de autopartes",
+		"tipos de autoparte",
+		"tipo de autopartes",
+		"tipo de autoparte",
+		"tipos de refacciones",
+		"tipos de refaccion",
+		"tipo de refacciones",
+		"tipo de refaccion",
+	):
+		texto = texto.replace(frase, " ")
 	verbos = (
 		"lista",
 		"listar",
@@ -1161,7 +1510,9 @@ def _ordenar(spec, filas, porcentajes, asc=None):
 	return filas, porcentajes, ""
 
 
-def explain(pregunta, spec, resultado, historial=None, universo_nombre=None):
+def explain(
+	pregunta, spec, resultado, historial=None, universo_nombre=None, periodo_texto=None, titulo_texto=None
+):
 	"""Genera la explicación conversacional. Devuelve (texto, info_log).
 
 	`universo_nombre` es la aseguradora (o "Todas las aseguradoras") que se
@@ -1181,8 +1532,10 @@ def explain(pregunta, spec, resultado, historial=None, universo_nombre=None):
 		for campo, d in bajos.items():
 			lineas_cob.append(f"- {campo}: {d['con_datos']} con datos ({d['pct']}%)")
 	mapa_tipos = _mapa_tipo_carga(resultado)
+	mapa_estatus = _mapa_estatus(resultado)
 	filas = _filas_legibles(spec, resultado, list(resultado.get("filas") or []))
 	filas = _tipo_carga_legible(resultado, filas, mapa_tipos)
+	filas = _estatus_legible(resultado, filas, mapa_estatus)
 	# Los porcentajes se calculan sobre las filas ya legibles para que el
 	# "grupo" lleve el nombre ("Agencia") y no el id.
 	porcentajes = _porcentajes(spec, {**resultado, "filas": filas})
@@ -1220,6 +1573,14 @@ def explain(pregunta, spec, resultado, historial=None, universo_nombre=None):
 	totales_no_rec = totales_no_recuperadas(filas, resultado)
 	# El resumen de 8 categorías también lleva los dos totales derivados.
 	total_rec = None if porcentajes else totales_recuperadas(filas, resultado)
+	# Conteo de recolectadas por dimensión: los grupos en 0 no "tienen"
+	# recolectadas y llenaban la tabla ("CRSL BODY SHOP 0"). Se descartan y se
+	# ordena de mayor a menor antes del recorte.
+	if total_rec is not None and spec.get("group_by") and len(filas) > 1:
+		pares = [(f, t) for f, t in zip(filas, total_rec) if (t or 0) > 0]
+		pares.sort(key=lambda par: par[1], reverse=True)
+		filas = [f for f, _ in pares]
+		total_rec = [t for _, t in pares]
 	if totales_no_rec is not None and spec.get("group_by"):
 		pares = [(f, t) for f, t in zip(filas, totales_no_rec) if (t or 0) > 0]
 		pares.sort(key=lambda par: par[1], reverse=True)
@@ -1247,6 +1608,10 @@ def explain(pregunta, spec, resultado, historial=None, universo_nombre=None):
 		filas, columnas_datos = _listado_sin_cifras(spec, resultado, filas)
 	else:
 		columnas_datos = resultado.get("columnas")
+	if total_rec is not None and not porcentajes:
+		filas, columnas_datos = _colapsar_recolectadas(
+			filas, resultado, detalle=_pide_detalle(pregunta)
+		)
 	# El objetivo solo se manda cuando la pregunta es de efectividad: si viajara
 	# siempre, el modelo lo colaría en respuestas de montos o de conteos.
 	habla_efectividad = bool(porcentajes) or "efectiv" in (pregunta or "").lower()
@@ -1266,9 +1631,23 @@ def explain(pregunta, spec, resultado, historial=None, universo_nombre=None):
 		"mostradas": len(filas),
 		"corte": corte,
 		"sin_cifras": listado,
+		# Listado de piezas pendientes por prioridad: los encabezados los pone la
+		# app (Submarca / Nombre pieza / Precio) y el modelo los cambiaba por
+		# "Tipo / Pieza / Valor". Se le pide no escribir la tabla.
+		"tabla_servidor": _tabla_servidor(spec),
+		# "resumen de piezas detallado" pide las dos tablas con todas las
+		# categorías; sin la bandera el modelo se quedaba con la tabla corta.
+		"detalle": _pide_detalle(pregunta),
 		"min_ingresadas": minimo or None,
 		"cobertura": "\n".join(lineas_cob),
 		"universo": universo_nombre or "",
+		# "resumen de piezas entre el mes anterior y el mes actual": el rango es
+		# uno solo (primer día del mes anterior al último del mes en curso) y la
+		# etiqueta la calcula el código para que no la invente ni la parta.
+		"periodo": periodo_texto or None,
+		# Qué se está mostrando (primera línea de la respuesta), también del
+		# código: medida + dimensión del spec.
+		"titulo": titulo_texto or None,
 		"catalogos": mapa_tipos,
 		"porcentajes": porcentajes,
 		"objetivo_efectividad": OBJETIVO_EFECTIVIDAD if habla_efectividad else None,
@@ -1281,6 +1660,7 @@ def explain(pregunta, spec, resultado, historial=None, universo_nombre=None):
 		datos["no_recuperadas_por_fila"] = totales_no_rec
 	if total_rec is not None:
 		datos["recuperadas"] = total_rec[0] if len(total_rec) == 1 else None
+		datos["recolectadas_por_fila"] = total_rec
 	mensajes = [{"role": "system", "content": SYSTEM_EXPLAIN}]
 	contexto = _bloque_contexto(historial)
 	if contexto:
@@ -1295,7 +1675,7 @@ def explain(pregunta, spec, resultado, historial=None, universo_nombre=None):
 	prompt_completo += "\n\n" + mensajes[-1]["content"]
 
 	def _llamar(adapter):
-		max_tokens = int(s.max_tokens_respuesta or 4000)
+		max_tokens = min(int(s.max_tokens_respuesta or 4000), 4000)
 		return adapter.chat(mensajes, max_tokens=max_tokens)
 
 	texto, info = _con_fallback(_cadena(pregunta), _llamar)

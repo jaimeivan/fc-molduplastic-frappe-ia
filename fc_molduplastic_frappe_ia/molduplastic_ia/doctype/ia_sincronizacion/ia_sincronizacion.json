@@ -1,0 +1,103 @@
+{
+  "actions": [],
+  "autoname": "hash",
+  "creation": "2026-11-02 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "fecha_solicitud",
+    "estado",
+    "usuario",
+    "inicio",
+    "fin",
+    "duracion_segundos",
+    "registros_sincronizados",
+    "detalle_json",
+    "error"
+  ],
+  "fields": [
+    {
+      "default": "Now",
+      "fieldname": "fecha_solicitud",
+      "fieldtype": "Datetime",
+      "in_list_view": 1,
+      "label": "Solicitada",
+      "reqd": 1
+    },
+    {
+      "default": "En cola",
+      "fieldname": "estado",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "label": "Estado",
+      "options": "En cola\nEn curso\nCompletada\nFallida",
+      "reqd": 1
+    },
+    {
+      "fieldname": "usuario",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Solicitada por",
+      "options": "User"
+    },
+    {
+      "fieldname": "inicio",
+      "fieldtype": "Datetime",
+      "in_list_view": 1,
+      "label": "Inicio"
+    },
+    {
+      "fieldname": "fin",
+      "fieldtype": "Datetime",
+      "in_list_view": 1,
+      "label": "Fin"
+    },
+    {
+      "fieldname": "duracion_segundos",
+      "fieldtype": "Int",
+      "label": "Duración (segundos)"
+    },
+    {
+      "default": "0",
+      "fieldname": "registros_sincronizados",
+      "fieldtype": "Int",
+      "in_list_view": 1,
+      "label": "Registros procesados"
+    },
+    {
+      "fieldname": "detalle_json",
+      "fieldtype": "Code",
+      "label": "Detalle por tabla (JSON)"
+    },
+    {
+      "fieldname": "error",
+      "fieldtype": "Long Text",
+      "label": "Error"
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "links": [],
+  "modified": "2026-11-02 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Molduplastic IA",
+  "name": "IA Sincronizacion",
+  "naming_rule": "Random",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "create": 1,
+      "delete": 0,
+      "email": 0,
+      "export": 1,
+      "print": 1,
+      "read": 1,
+      "report": 1,
+      "role": "System Manager",
+      "share": 0,
+      "write": 0
+    }
+  ],
+  "sort_field": "fecha_solicitud",
+  "sort_order": "DESC"
+}

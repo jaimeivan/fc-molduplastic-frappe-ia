@@ -285,12 +285,17 @@ def ui_ask(pregunta, conversacion=None, universo=None):
 	try:
 		spec, info = generate_spec(pregunta.strip(), historial=historial)
 	except (LLMConfigError, LLMProviderError) as e:
-		_log_llamada({}, "generate_spec", "Fallo", consulta_id, user, aseguradora_log, str(e))
+		_log_llamada(
+			{}, "generate_spec", "Fallo", consulta_id, user, aseguradora_log, str(e), historial=historial
+		)
 		return {"ok": False, "mensaje": f"El servicio de IA no está disponible: {e}"}
-	_log_llamada(info, "generate_spec", "Éxito", consulta_id, user, aseguradora_log)
+	_log_llamada(info, "generate_spec", "Éxito", consulta_id, user, aseguradora_log, historial=historial)
 
 	if spec.get("out_of_scope"):
-		_log_llamada(info, "generate_spec", FUERA_DE_ALCANCE, consulta_id, user, aseguradora_log)
+		_log_llamada(
+			info, "generate_spec", FUERA_DE_ALCANCE, consulta_id, user, aseguradora_log,
+			historial=historial,
+		)
 		doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
 		_guardar_mensajes(
 			doc, pregunta, MENSAJE_FUERA_DE_ALCANCE, None, None, None, primera=not conversacion
@@ -311,7 +316,10 @@ def ui_ask(pregunta, conversacion=None, universo=None):
 			from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import tabla_regiones
 
 			texto = tabla_regiones()
-		_log_llamada(info, "generate_spec", "Respuesta directa", consulta_id, user, aseguradora_log)
+		_log_llamada(
+			info, "generate_spec", "Respuesta directa", consulta_id, user, aseguradora_log,
+			historial=historial,
+		)
 		doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
 		_guardar_mensajes(doc, pregunta, texto, spec, None, None, primera=not conversacion)
 		return {
@@ -327,7 +335,10 @@ def ui_ask(pregunta, conversacion=None, universo=None):
 	try:
 		resultado = ejecutar(spec, user, alcance=alcance)
 	except SpecInvalida as e:
-		_log_llamada(info, "generate_spec", "Spec rechazada", consulta_id, user, aseguradora_log, str(e))
+		_log_llamada(
+			info, "generate_spec", "Spec rechazada", consulta_id, user, aseguradora_log, str(e),
+			historial=historial,
+		)
 		return {"ok": False, "mensaje": f"No pude construir una consulta válida: {e}"}
 	except frappe.PermissionError as e:
 		return {"ok": False, "mensaje": str(e)}
@@ -335,10 +346,10 @@ def ui_ask(pregunta, conversacion=None, universo=None):
 	presentacion = None
 	try:
 		explicacion, info_exp = explain(pregunta, spec, resultado, historial=historial)
-		_log_llamada(info_exp, "explain", "Éxito", consulta_id, user, aseguradora_log)
+		_log_llamada(info_exp, "explain", "Éxito", consulta_id, user, aseguradora_log, historial=historial)
 		presentacion = info_exp.get("datos")
 	except (LLMConfigError, LLMProviderError) as e:
-		_log_llamada({}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e))
+		_log_llamada({}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e), historial=historial)
 		explicacion = "Obtuve los datos, pero no pude generar la explicación en este momento."
 
 	doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
