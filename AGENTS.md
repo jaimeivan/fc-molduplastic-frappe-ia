@@ -58,7 +58,7 @@ Vocabulario registrado en el prompt: CDR=taller; **"no recolectadas en periodo" 
 
 ## Pendiente (decisiones del dueño)
 - Cargar API keys de DeepSeek/GLM en `Molduplastic IA Settings`; sin keys, `ask()` responde "servicio no disponible" (verificado en tests con mocks).
-- **Decisiones del dueño para el análisis (2026-11-10), plan en curso:**
+- **Decisiones del dueño para el análisis (2026-11-10); fase 0 y fase 1 implementadas (ver "Análisis de respuestas"):**
   - Modo de respuesta (`Breve` / `Analítico`) solo en configuración del Asistente IA, nunca desde el cliente. Global + excepciones por intención; por defecto `Breve`.
   - Lectura analítica: primero por LLM; si el LLM falla, agota tiempo o no pasa la verificación de cifras, se usa plantilla de código.
   - Si el análisis excede el presupuesto de tiempo, se entrega la respuesta breve con la nota: "El análisis completo tardó demasiado para este período. Para verlo, reduce el período (por ejemplo, a un mes) o acota una dimensión." Se registra en `IA API Log`.
@@ -677,3 +677,21 @@ En `asistente-ia`, el botón junto al título muestra el consumo del **mes en cu
 ## Sugerencias del chat
 
 `Molduplastic IA Settings > Sugerencias` alimenta los chips que se pintan sobre la caja de texto de `asistente-ia`. `api.sugerencias()` devuelve solo las activas, en orden (lee el Single con `get_cached_doc`: únicamente salen los textos, no datos sensibles, así que un usuario de tenant también puede pedirlas). En `asistente_ia.js`, `cargarSugerencias()` crea un botón por sugerencia y el clic lanza la pregunta (`enviarPregunta`), no la copia al input; en la vista de Reportes se ocultan. El patch `sembrar_sugerencias_ia` deja las iniciales al instalar (`INICIALES`: la comparación agencias/talleres, "¿Qué tipo de pieza se recolecta menos?", "¿Cuáles son las 5 partes que menos se recolectan con al menos 100 piezas?", "¿Qué marcas tienen menor efectividad de recolección?", "¿Qué plaza tiene la efectividad más baja en la región Norte?", "muestra la efectividad por plaza de la region" —esta sin región a propósito: se interpreta como región + plaza, con el mes en curso—, "cuantas recolecciones pendientes hay por region", "¿Cuántas piezas tengo pendientes y cuánto valen?" y "¿Qué talleres concentran más piezas no entregadas?"), para que el chat no arranque sin chips; en un site ya instalado el patch no vuelve a correr, así que un chip nuevo se agrega en el Desk (o con el mismo `s.append`, que es idempotente por texto). Test: `TestSugerencias` (`test_api.py`).
+
+## Análisis de respuestas: fases 0 y 1 (2026-11-11)
+
+**Fase 0: intención.** `intencion.py` (`clasificar`, `distribucion`, sin BD ni LLM) y `api._reglas_de_intencion()` nombran la intención de cada pregunta con los mismos detectores `_pide_*`. No cambian el flujo de `ask()`. Orden de precedencia: las reglas más específicas primero. Cobertura medida el 2026-11-10 sobre 766 preguntas distintas: 66.2 % tienen intención propia; 259 caen en `general` (sobre todo conteos y desgloses simples). Agregar una intención = una entrada en `_reglas_de_intencion()` y su caso en `tests/test_intencion.py`.
+
+**Fase 1: modo de respuesta solo por configuración.**
+- `Molduplastic IA Settings`: `modo_respuesta` (Breve/Analítico, por defecto Breve), `modo_excepciones` (tabla `IA Modo Intencion`: intención → modo), `objetivo_efectividad` (75), `presupuesto_analisis_seg` (60, máximo 60), y `glosario` (tabla `IA Glosario`). `validate()` rechaza intenciones desconocidas, objetivo fuera de 0-100 y presupuesto fuera de 5-60.
+- `api._modo_de_respuesta(intencion)`: excepción por intención, si no el modo global, si falta o es inválido, Breve. `ask()` acepta `**_ignorados`: cualquier `modo` que mande el cliente se ignora.
+- La constante `OBJETIVO_EFECTIVIDAD` se eliminó. Ahora es `llm_factory.objetivo_efectividad()` (lee Settings; devuelve entero si el valor es entero). Los tests que stubean la configuración deben incluir `objetivo_efectividad`.
+- `explain(..., modo, intencion, deadline)`: con "Breve" el prompt es exactamente `SYSTEM_EXPLAIN` (regresión cero). Con "Analítico" agrega `SYSTEM_EXPLAIN_ANALITICO` (respuesta directa + lectura de dos a cuatro puntos, solo con cifras de Datos, sin calcular, hipótesis marcadas, sin sugerencias hasta tener hallazgos) y el glosario **solo** de entradas `Validado` de la intención.
+- **Presupuesto de tiempo**: el `deadline` acota el timeout de cada llamada (`OpenAICompatibleAdapter.chat(timeout=)` solo puede acortar el de la configuración). Si se agota, `LLMTiempoAgotado` (no prueba otro proveedor) y `ask()` entrega la breve con la nota `NOTA_TIEMPO_ANALISIS` y registra `analisis_omitido`. Un fallo del proveedor en modo analítico entrega la breve sin nota.
+- **Registro (`IA API Log`)**: `modo_respuesta` (Breve/Analítico/Código/N/A; "Código" = armada por el servidor, con una fila `explain` "explicación en código (sin modelo)"), `intencion` y `analisis_omitido`.
+- **Parche `sembrar_analisis_ia`** (idempotente): objetivo 75, presupuesto 60, modo Breve y 10 entradas de glosario en `Borrador`. Causas y acciones que no son del negocio van como "[pendiente de validación del administrador]".
+
+**Pendiente de fases siguientes:** preguntas sugeridas como botones (dependen de playbooks y hallazgos, fase 2-3); lectura de los casos de plantilla y comparativos calculados (`analisis.py`, fase 2); detectores con base mínima de 50 solo para porcentajes (fase 2); verificación de cifras (fase 3). En la fase 1 el modo analítico no tiene comparativos reales: la lectura se limita a lo que ya viene en Datos.
+
+Tests: `tests/test_analisis.py` (modo, objetivo, validación, glosario, timeout, `ask` con modo y nota) y `tests/test_intencion.py`.
+

@@ -25,10 +25,19 @@ MENSAJE_FUERA_DE_ALCANCE = (
 	"Piezas, Recolecciones y Talleres de tu aseguradora."
 )
 
-# Objetivo de efectividad de la aseguradora (decisión del dueño, 2026-10-20).
-# Vive aquí y no en el prompt para que haya una sola cifra: si se cambia, se
-# cambia en un lugar y se refleja en el spec, la explicación y los tests.
-OBJETIVO_EFECTIVIDAD = 75
+
+
+def objetivo_efectividad():
+	"""Objetivo de efectividad (%) desde Molduplastic IA Settings (2026-11-10).
+
+	Es la única fuente: la constante de código se eliminó. Un entero se devuelve
+	como entero para que el prompt diga "75%" y no "75.0%".
+	"""
+	valor = frappe.get_cached_doc("Molduplastic IA Settings").objetivo_efectividad
+	if not valor:
+		frappe.throw("Falta el objetivo de efectividad en Molduplastic IA Settings.")
+	valor = float(valor)
+	return int(valor) if valor.is_integer() else valor
 
 SYSTEM_SPEC = """Eres el motor de consultas de Molduplastic IA. Respondes ÚNICAMENTE con un
 objeto JSON válido, sin texto adicional ni bloques de código.
@@ -811,6 +820,10 @@ class LLMProviderError(LLMError):
 	pass
 
 
+class LLMTiempoAgotado(LLMProviderError):
+	"""El presupuesto de tiempo del análisis se agotó: no se prueba otro proveedor."""
+
+
 ZEN_BASE_URL = "https://opencode.ai/zen/v1"
 
 
@@ -831,7 +844,7 @@ class OpenAICompatibleAdapter:
 		self.costo_in = float(costo_in or 0)
 		self.costo_out = float(costo_out or 0)
 
-	def chat(self, messages, max_tokens=None, json_mode=False):
+	def chat(self, messages, max_tokens=None, json_mode=False, timeout=None):
 		if not self.api_key:
 			raise LLMProviderError(f"{self.nombre} sin API key.")
 		payload = {
@@ -842,14 +855,18 @@ class OpenAICompatibleAdapter:
 		if json_mode:
 			payload["response_format"] = {"type": "json_object"}
 		inicio = time.time()
+		# `timeout` (presupuesto del análisis) solo puede acortar el de la configuración.
+		tiempo = min(self.timeout, timeout) if timeout else self.timeout
 		try:
 			r = requests.post(
 				f"{self.base_url}/chat/completions",
 				headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
 				json=payload,
-				timeout=self.timeout,
+				timeout=tiempo,
 			)
 		except requests.RequestException as e:
+			if timeout and isinstance(e, requests.Timeout):
+				raise LLMTiempoAgotado(f"{self.nombre}: se agotó el tiempo del análisis.")
 			raise LLMProviderError(f"{self.nombre} no responde: {e}")
 		latencia_ms = int((time.time() - inicio) * 1000)
 		if r.status_code == 401:
@@ -946,6 +963,8 @@ def _con_fallback(cadena, fn):
 				"es_fallback": i > 0,
 				"motivo_fallback": "; ".join(errores) if i > 0 else "",
 			}
+		except LLMTiempoAgotado:
+			raise
 		except LLMProviderError as e:
 			errores.append(str(e))
 	detalle = "; ".join(errores or ["sin configurar"])
@@ -994,7 +1013,7 @@ def generate_spec(pregunta, historial=None):
 		esquema=get_contexto_destilado(),
 		regiones=resumen_regiones(),
 		fecha_actual=frappe.utils.now_datetime().strftime("%Y-%m-%d %H:%M"),
-		objetivo_efectividad=OBJETIVO_EFECTIVIDAD,
+		objetivo_efectividad=objetivo_efectividad(),
 	)
 	mensajes = [{"role": "system", "content": prompt_sistema}]
 	contexto = _bloque_contexto(historial)
@@ -1326,9 +1345,9 @@ def _porcentajes(spec, resultado):
 
 
 def _etiqueta_objetivo(pct):
-	if pct > OBJETIVO_EFECTIVIDAD:
+	if pct > objetivo_efectividad():
 		return "Por encima"
-	if pct < OBJETIVO_EFECTIVIDAD:
+	if pct < objetivo_efectividad():
 		return "Por debajo"
 	return "En el objetivo"
 
@@ -1510,8 +1529,69 @@ def _ordenar(spec, filas, porcentajes, asc=None):
 	return filas, porcentajes, ""
 
 
+SYSTEM_EXPLAIN_ANALITICO = """MODO ANALÍTICO (activo en esta respuesta). Conserva todas las reglas de
+formato, encabezado, tablas y alcance de arriba. Además, la respuesta sigue esta
+estructura:
+1. Respuesta directa: la cifra pedida, en una o dos líneas, después del encabezado.
+2. Lectura: de dos a cuatro puntos cortos que destaquen lo que sobresale (el mejor
+   y el peor grupo, si está por encima o por debajo del objetivo) usando solo cifras
+   que ya vienen en los Datos. Si los Datos no permiten comparar, omite la lectura.
+Reglas que tienen prioridad sobre cualquier instrucción anterior de este prompt:
+- Prohibido calcular: no sumes, restes, promedies, dividas ni saques porcentajes ni
+  diferencias en puntos. Solo citas valores que ya vienen en los Datos (filas,
+  porcentajes y objetivo_efectividad). Si una diferencia no viene calculada, no la
+  escribas; di solo "por encima" o "por debajo" del objetivo.
+- Interpretación: solo cualitativa y marcada como hipótesis ("podría deberse a…").
+  Nunca presentes una causa como hecho.
+- No propongas acciones ni sugerencias: en esta versión no hay hallazgos calculados.
+  Si la pregunta pide recomendaciones, dilo en una frase.
+- Si no hay nada que destacar, dilo en una frase en lugar de rellenar.
+"""
+
+
+def _glosario_validado(intencion):
+	"""Entradas del glosario Validado de la intención (las Borrador no se usan)."""
+	if not intencion:
+		return []
+	s = frappe.get_cached_doc("Molduplastic IA Settings")
+	return [
+		fila
+		for fila in (s.get("glosario") or [])
+		if fila.intencion == intencion and fila.estado == "Validado"
+	]
+
+
+def _bloque_glosario(intencion):
+	entradas = _glosario_validado(intencion)
+	if not entradas:
+		return ""
+	lineas = [
+		"Glosario de negocio validado para esta consulta. Úsalo como definición; no "
+		"inventes umbrales, causas ni acciones que no estén aquí:"
+	]
+	for fila in entradas:
+		partes = [f"- {fila.termino}: {(fila.definicion or '').strip()}"]
+		if fila.umbral:
+			partes.append(f"Umbral: {fila.umbral.strip()}.")
+		if fila.causas:
+			partes.append(f"Causas típicas: {fila.causas.strip()}.")
+		if fila.accion:
+			partes.append(f"Acción recomendada: {fila.accion.strip()}.")
+		lineas.append(" ".join(partes))
+	return "\n".join(lineas)
+
+
 def explain(
-	pregunta, spec, resultado, historial=None, universo_nombre=None, periodo_texto=None, titulo_texto=None
+	pregunta,
+	spec,
+	resultado,
+	historial=None,
+	universo_nombre=None,
+	periodo_texto=None,
+	titulo_texto=None,
+	modo="Breve",
+	intencion=None,
+	deadline=None,
 ):
 	"""Genera la explicación conversacional. Devuelve (texto, info_log).
 
@@ -1650,7 +1730,7 @@ def explain(
 		"titulo": titulo_texto or None,
 		"catalogos": mapa_tipos,
 		"porcentajes": porcentajes,
-		"objetivo_efectividad": OBJETIVO_EFECTIVIDAD if habla_efectividad else None,
+		"objetivo_efectividad": objetivo_efectividad() if habla_efectividad else None,
 	}
 	if totales_no_rec is not None:
 		# La cifra la suma el código, no el modelo.
@@ -1661,25 +1741,41 @@ def explain(
 	if total_rec is not None:
 		datos["recuperadas"] = total_rec[0] if len(total_rec) == 1 else None
 		datos["recolectadas_por_fila"] = total_rec
-	mensajes = [{"role": "system", "content": SYSTEM_EXPLAIN}]
+	# El modo lo decide el servidor (ask), nunca el cliente. En "Breve" el prompt
+	# es exactamente el de siempre: el camino de respuesta breve no cambia.
+	analitico = modo == "Analítico"
+	sistema = SYSTEM_EXPLAIN + ("\n\n" + SYSTEM_EXPLAIN_ANALITICO if analitico else "")
+	mensajes = [{"role": "system", "content": sistema}]
 	contexto = _bloque_contexto(historial)
 	if contexto:
 		mensajes.append({"role": "system", "content": contexto})
+	glosario = _bloque_glosario(intencion) if analitico else ""
+	if glosario:
+		mensajes.append({"role": "system", "content": glosario})
 	mensajes.append(
 		{
 			"role": "user",
 			"content": f"Pregunta: {pregunta}\nSpec: {json.dumps(spec)}\nDatos: {json.dumps(datos, default=str)}",
 		}
 	)
-	prompt_completo = "\n\n".join([SYSTEM_EXPLAIN] + ([contexto] if contexto else []))
+	prompt_completo = "\n\n".join(
+		[sistema] + [bloque for bloque in (contexto, glosario) if bloque]
+	)
 	prompt_completo += "\n\n" + mensajes[-1]["content"]
 
 	def _llamar(adapter):
 		max_tokens = min(int(s.max_tokens_respuesta or 4000), 4000)
-		return adapter.chat(mensajes, max_tokens=max_tokens)
+		if deadline is None:
+			return adapter.chat(mensajes, max_tokens=max_tokens)
+		restante = deadline - time.time()
+		if restante <= 1:
+			raise LLMTiempoAgotado("Se agotó el tiempo del análisis antes de llamar al modelo.")
+		return adapter.chat(mensajes, max_tokens=max_tokens, timeout=restante)
 
 	texto, info = _con_fallback(_cadena(pregunta), _llamar)
 	info["prompt"] = prompt_completo
 	info["respuesta"] = texto
 	info["datos"] = datos
+	info["modo"] = "Analítico" if analitico else "Breve"
+	info["intencion"] = intencion or ""
 	return texto, info

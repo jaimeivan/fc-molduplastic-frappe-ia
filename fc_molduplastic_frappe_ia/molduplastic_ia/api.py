@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 import unicodedata
 
 import frappe
@@ -10,11 +11,12 @@ from fc_molduplastic_frappe_ia.molduplastic_ia.llm_factory import (
 	MENSAJE_FUERA_DE_ALCANCE,
 	LLMConfigError,
 	LLMProviderError,
+	LLMTiempoAgotado,
 	ALIAS_NO_RECUPERADAS,
 	_es_listado,
 	_filas_legibles,
-	OBJETIVO_EFECTIVIDAD,
 	_etiqueta_objetivo,
+	objetivo_efectividad,
 	_listado_sin_cifras,
 	_porcentajes,
 	_valor_legible,
@@ -1168,7 +1170,7 @@ def _pide_mapa_efectividad(pregunta):
 
 def _circulo_de_efectividad(pct):
 	"""Semáforo del mapa: verde ≥ 75%, amarillo 50-74.9%, rojo < 50%."""
-	if pct >= OBJETIVO_EFECTIVIDAD:
+	if pct >= objetivo_efectividad():
 		return "🟢"
 	if pct >= 50:
 		return "🟡"
@@ -1365,9 +1367,9 @@ def _tabla_mezcla_volumen_efectividad(spec, resultado, mezcla):
 			else ((p.get("total") or 0) <= umbral)
 		)
 		and (
-			((p.get("pct") or 0) >= OBJETIVO_EFECTIVIDAD)
+			((p.get("pct") or 0) >= objetivo_efectividad())
 			if efectividad_alta
-			else ((p.get("pct") or 0) < OBJETIVO_EFECTIVIDAD)
+			else ((p.get("pct") or 0) < objetivo_efectividad())
 		)
 	]
 	seleccion.sort(key=lambda p: p.get("total") or 0, reverse=True)
@@ -6480,7 +6482,10 @@ def _rate_limit_ok(user):
 	return True
 
 
-def _log_llamada(info, operacion, estado, consulta_id, user, aseguradora, error="", historial=None):
+def _log_llamada(
+	info, operacion, estado, consulta_id, user, aseguradora, error="", historial=None,
+	modo=None, intencion=None, analisis_omitido=False,
+):
 	"""Una fila por llamada al LLM, con el contexto conversacional que viajó.
 
 	`turnos_previos`/`chars_previos` son lo efectivamente enviado (0 cuando la
@@ -6515,6 +6520,11 @@ def _log_llamada(info, operacion, estado, consulta_id, user, aseguradora, error=
 			"latencia_ms": info.get("latencia_ms") or 0,
 			"costo_estimado_usd": info.get("costo_estimado_usd") or 0,
 			"error": error,
+			# Modo efectivo: el del explain cuando lo hubo; "Código" cuando la
+			# respuesta la armó el servidor. La intención viene del clasificador.
+			"modo_respuesta": modo or info.get("modo") or "",
+			"intencion": intencion or info.get("intencion") or "",
+			"analisis_omitido": 1 if analisis_omitido else 0,
 		}
 	)
 	doc.insert(ignore_permissions=True)
@@ -6654,6 +6664,40 @@ def intencion_de_pregunta(pregunta):
 	return clasificar(pregunta, _reglas_de_intencion())
 
 
+def intenciones_conocidas():
+	"""Nombres válidos para las excepciones y el glosario (la validación de Settings los usa)."""
+	return {nombre for nombre, _ in _reglas_de_intencion()} | {"general"}
+
+
+MODOS_RESPUESTA = ("Breve", "Analítico")
+NOTA_TIEMPO_ANALISIS = (
+	"El análisis completo tardó demasiado para este período. Para verlo, reduce el "
+	"período (por ejemplo, a un mes) o acota una dimensión."
+)
+
+
+def _modo_de_respuesta(intencion):
+	"""Modo efectivo de la respuesta: lo decide solo la configuración del servidor.
+
+	Excepción por intención si existe; si no, el modo global; si falta o es
+	inválido, Breve. El cliente no participa: `ask()` no lee ningún modo.
+	"""
+	try:
+		s = frappe.get_cached_doc("Molduplastic IA Settings")
+	except frappe.DoesNotExistError:
+		return "Breve"
+	for fila in s.get("modo_excepciones") or []:
+		if fila.intencion == intencion and fila.modo in MODOS_RESPUESTA:
+			return fila.modo
+	return s.modo_respuesta if s.modo_respuesta in MODOS_RESPUESTA else "Breve"
+
+
+def _presupuesto_analisis_seg():
+	"""Segundos para la respuesta analítica (acotado por la validación de Settings)."""
+	s = frappe.get_cached_doc("Molduplastic IA Settings")
+	return min(max(int(s.presupuesto_analisis_seg or 60), 5), 60)
+
+
 def _explicacion_en_codigo(spec, pregunta):
 	"""True si la respuesta la arma el código y no hace falta llamar al modelo.
 
@@ -6680,8 +6724,12 @@ def _explicacion_en_codigo(spec, pregunta):
 
 
 @frappe.whitelist()
-def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, hasta=None):
-	"""Flujo completo: universo -> spec -> validación -> ejecución -> explicación."""
+def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, hasta=None, **_ignorados):
+	"""Flujo completo: universo -> spec -> validación -> ejecución -> explicación.
+
+	El modo de respuesta no es un parámetro del cliente: cualquier clave extra
+	(p. ej. "modo") se ignora y el modo sale de la configuración en el servidor.
+	"""
 	user = frappe.session.user
 	if user == "Guest":
 		frappe.throw("Debes iniciar sesión.", frappe.PermissionError)
@@ -6764,6 +6812,8 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	historial = _historial_para_llm(conversacion, user)
 	# "¿de qué …?" = "¿qué …?" para las detecciones.
 	pregunta_det = _cada_como_por(_sinonimo_de_que(pregunta))
+	intencion = intencion_de_pregunta(pregunta_det)
+	modo_pedido = _modo_de_respuesta(intencion)
 
 	# "A contra B" se arma en código: el modelo tardaba 20-60 s y el navegador
 	# cortaba la petición (499) aunque la consulta tarda 0.1 s.
@@ -6988,27 +7038,61 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	explicacion_en_codigo = _explicacion_en_codigo(spec, pregunta_det) or bool(lados_contra)
 	info_exp = {}
 	explicacion = ""
-	if not explicacion_en_codigo:
-		try:
-			explicacion, info_exp = explain(
-				pregunta_det,
-				spec,
-				resultado,
-				historial=historial,
-				universo_nombre=_nombre_aseguradora(universo),
-				periodo_texto=_texto_periodo(pregunta, spec),
-				titulo_texto=_titulo_respuesta_para(spec, pregunta_det),
-			)
-			_log_llamada(
-				info_exp, "explain", "Éxito", consulta_id, user, aseguradora_log,
-				historial=historial,
-			)
-		except (LLMConfigError, LLMProviderError) as e:
-			_log_llamada(
-				{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
-				historial=historial,
-			)
-			explicacion = "Obtuve los datos, pero no pude generar la explicación en este momento."
+	analisis_omitido = False
+	if explicacion_en_codigo:
+		_log_llamada(
+			{"modo": "Código", "intencion": intencion}, "explain", "Éxito", consulta_id,
+			user, aseguradora_log, "explicación en código (sin modelo)",
+		)
+	else:
+		argumentos = dict(
+			historial=historial,
+			universo_nombre=_nombre_aseguradora(universo),
+			periodo_texto=_texto_periodo(pregunta, spec),
+			titulo_texto=_titulo_respuesta_para(spec, pregunta_det),
+		)
+		explicado = False
+		if modo_pedido == "Analítico":
+			# Presupuesto de tiempo: si el análisis no termina, no se espera más.
+			# Se entrega la respuesta breve con una nota (decisión del dueño).
+			try:
+				explicacion, info_exp = explain(
+					pregunta_det, spec, resultado, **argumentos,
+					modo="Analítico", intencion=intencion,
+					deadline=time.time() + _presupuesto_analisis_seg(),
+				)
+				_log_llamada(
+					info_exp, "explain", "Éxito", consulta_id, user, aseguradora_log,
+					historial=historial,
+				)
+				explicado = True
+			except LLMTiempoAgotado as e:
+				analisis_omitido = True
+				_log_llamada(
+					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
+					historial=historial, modo="Analítico", intencion=intencion,
+					analisis_omitido=True,
+				)
+			except (LLMConfigError, LLMProviderError) as e:
+				_log_llamada(
+					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
+					historial=historial, modo="Analítico", intencion=intencion,
+				)
+		if not explicado:
+			try:
+				explicacion, info_exp = explain(
+					pregunta_det, spec, resultado, **argumentos, intencion=intencion,
+				)
+				_log_llamada(
+					info_exp, "explain", "Éxito", consulta_id, user, aseguradora_log,
+					historial=historial,
+				)
+			except (LLMConfigError, LLMProviderError) as e:
+				_log_llamada(
+					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
+					historial=historial, intencion=intencion,
+				)
+				explicacion = "Obtuve los datos, pero no pude generar la explicación en este momento."
 
 	# El listado de prioridad lo pinta la app con sus encabezados exactos
 	# (Submarca / Nombre pieza / Precio): el modelo los cambiaba por "Tipo /
@@ -7490,6 +7574,8 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	etiqueta = _etiqueta_alcance(pregunta, universo)
 	if etiqueta and _texto_normalizado(etiqueta) not in _texto_normalizado(explicacion):
 		explicacion = f"{explicacion}\n\n{etiqueta}"
+	if analisis_omitido:
+		explicacion = f"{explicacion}\n\n{NOTA_TIEMPO_ANALISIS}"
 
 	# La efectividad se pinta con la dimensión y las cuatro columnas del criterio;
 	# el resultado crudo (total, recolectadas, inconsistentes, rezagadas) no sale

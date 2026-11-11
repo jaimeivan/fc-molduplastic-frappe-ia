@@ -43,6 +43,7 @@ def settings_stub():
 			"max_tokens_respuesta": 2000,
 			"max_limit": 500,
 			"proveedor_defecto": "Automático",
+			"objetivo_efectividad": 75,
 			"get_password": lambda k: "ZENKEY",
 		}
 	)
@@ -134,7 +135,7 @@ class TestPromptSpec(FrappeTestCase):
 
 	def test_prompt_lleva_el_objetivo_de_efectividad(self):
 		prompt = self._prompt_generado("¿estamos por encima o por debajo del objetivo?")
-		self.assertIn(f"El objetivo de efectividad es {F.OBJETIVO_EFECTIVIDAD}%", prompt)
+		self.assertIn(f"El objetivo de efectividad es {F.objetivo_efectividad()}%", prompt)
 		self.assertNotIn("{objetivo_efectividad}", prompt)
 
 	def test_prompt_trata_cdr_como_taller_y_no_inventa_capacidad(self):
@@ -326,11 +327,11 @@ class TestPromptExplain(FrappeTestCase):
 		}
 		resultado = {"columnas": ["total", "recolectadas"], "filas": [[40, 0]]}
 		con_objetivo = self._datos_enviados(spec, resultado, pregunta="¿cómo vamos contra el objetivo?")
-		self.assertEqual(con_objetivo["objetivo_efectividad"], F.OBJETIVO_EFECTIVIDAD)
+		self.assertEqual(con_objetivo["objetivo_efectividad"], F.objetivo_efectividad())
 		# Si las columnas son total + recolectadas, la consulta ES de efectividad
 		# aunque la pregunta no lo diga: el objetivo también aplica.
 		datos = self._datos_enviados(spec, resultado, pregunta="dame el total y las recolectadas")
-		self.assertEqual(datos["objetivo_efectividad"], F.OBJETIVO_EFECTIVIDAD)
+		self.assertEqual(datos["objetivo_efectividad"], F.objetivo_efectividad())
 
 	def test_objetivo_no_viaja_en_consultas_ajenas(self):
 		resultado = {"columnas": ["marca", "n"], "filas": [["Nissan", 17]]}

@@ -16,6 +16,9 @@
     "modelo",
     "column_break_log2",
     "operacion",
+    "modo_respuesta",
+    "intencion",
+    "analisis_omitido",
     "es_fallback",
     "motivo_fallback",
     "contexto_conv_section",
@@ -204,6 +207,24 @@
       "fieldname": "error",
       "fieldtype": "Long Text",
       "label": "Error"
+    },
+    {
+      "fieldname": "modo_respuesta",
+      "fieldtype": "Select",
+      "label": "Modo efectivo",
+      "options": "Breve\nAnalítico\nCódigo\nN/A",
+      "description": "Modo con el que se redactó la respuesta. Código = armada por el servidor, sin modelo."
+    },
+    {
+      "fieldname": "intencion",
+      "fieldtype": "Data",
+      "label": "Intención"
+    },
+    {
+      "default": "0",
+      "fieldname": "analisis_omitido",
+      "fieldtype": "Check",
+      "label": "Análisis omitido por tiempo"
     }
   ],
   "index_web_pages_for_search": 0,

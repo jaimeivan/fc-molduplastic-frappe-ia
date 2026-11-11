@@ -1,0 +1,71 @@
+{
+  "actions": [],
+  "creation": "2026-11-11 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 1,
+  "engine": "InnoDB",
+  "field_order": [
+    "intencion",
+    "termino",
+    "estado",
+    "definicion",
+    "umbral",
+    "causas",
+    "accion"
+  ],
+  "fields": [
+    {
+      "fieldname": "intencion",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Intención",
+      "reqd": 1
+    },
+    {
+      "fieldname": "termino",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "Término",
+      "reqd": 1
+    },
+    {
+      "default": "Borrador",
+      "fieldname": "estado",
+      "fieldtype": "Select",
+      "in_list_view": 1,
+      "label": "Estado",
+      "options": "Borrador\nValidado",
+      "description": "Solo las entradas Validadas se usan en las respuestas analíticas.",
+      "reqd": 1
+    },
+    {
+      "fieldname": "definicion",
+      "fieldtype": "Small Text",
+      "label": "Definición"
+    },
+    {
+      "fieldname": "umbral",
+      "fieldtype": "Small Text",
+      "label": "Umbral relevante"
+    },
+    {
+      "fieldname": "causas",
+      "fieldtype": "Small Text",
+      "label": "Causas típicas"
+    },
+    {
+      "fieldname": "accion",
+      "fieldtype": "Small Text",
+      "label": "Acción recomendada"
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "istable": 1,
+  "links": [],
+  "modified": "2026-11-11 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Molduplastic IA",
+  "name": "IA Glosario",
+  "owner": "Administrator",
+  "permissions": []
+}

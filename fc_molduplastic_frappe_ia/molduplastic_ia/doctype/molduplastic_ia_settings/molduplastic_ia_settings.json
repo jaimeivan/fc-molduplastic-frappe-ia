@@ -33,7 +33,15 @@
     "sync_pause_ms",
     "sync_checkpoints_json",
     "sugerencias_section",
-    "sugerencias"
+    "sugerencias",
+    "analisis_section",
+    "modo_respuesta",
+    "objetivo_efectividad",
+    "column_break_analisis",
+    "presupuesto_analisis_seg",
+    "modo_excepciones",
+    "glosario_section",
+    "glosario"
   ],
   "fields": [
     {
@@ -206,6 +214,59 @@
       "fieldtype": "Table",
       "label": "Sugerencias",
       "options": "IA Sugerencias"
+    },
+    {
+      "fieldname": "analisis_section",
+      "fieldtype": "Section Break",
+      "label": "Análisis de respuestas"
+    },
+    {
+      "default": "Breve",
+      "fieldname": "modo_respuesta",
+      "fieldtype": "Select",
+      "label": "Modo de respuesta",
+      "options": "Breve\nAnalítico",
+      "description": "Breve: la respuesta de siempre. Analítico: cifra, lectura y sugerencias basadas en los datos. Solo lo cambia el administrador; el chat no tiene control de modo.",
+      "reqd": 1
+    },
+    {
+      "default": "75",
+      "fieldname": "objetivo_efectividad",
+      "fieldtype": "Float",
+      "label": "Objetivo de efectividad (%)",
+      "description": "Meta de recolectadas sobre ingresadas. Se usa en las tablas de efectividad y en la lectura analítica.",
+      "reqd": 1
+    },
+    {
+      "fieldname": "column_break_analisis",
+      "fieldtype": "Column Break"
+    },
+    {
+      "default": "60",
+      "fieldname": "presupuesto_analisis_seg",
+      "fieldtype": "Int",
+      "label": "Presupuesto de tiempo del análisis (segundos)",
+      "description": "Si la respuesta analítica no termina en este tiempo, se entrega la respuesta breve con una nota. Máximo 60.",
+      "reqd": 1
+    },
+    {
+      "fieldname": "modo_excepciones",
+      "fieldtype": "Table",
+      "label": "Excepciones por intención",
+      "options": "IA Modo Intencion",
+      "description": "Para activar el modo analítico solo en algunas intenciones. Sin fila, rige el modo de respuesta."
+    },
+    {
+      "fieldname": "glosario_section",
+      "fieldtype": "Section Break",
+      "label": "Glosario de negocio"
+    },
+    {
+      "fieldname": "glosario",
+      "fieldtype": "Table",
+      "label": "Glosario",
+      "options": "IA Glosario",
+      "description": "Definiciones, umbrales, causas y acciones por intención. Las entradas en Borrador no se usan; las validadas por el administrador sí."
     }
   ],
   "index_web_pages_for_search": 0,
