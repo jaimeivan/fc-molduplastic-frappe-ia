@@ -19,6 +19,9 @@
     "modo_respuesta",
     "intencion",
     "analisis_omitido",
+    "consultas_complementarias",
+    "latencia_analisis_ms",
+    "hallazgos",
     "es_fallback",
     "motivo_fallback",
     "contexto_conv_section",
@@ -225,6 +228,23 @@
       "fieldname": "analisis_omitido",
       "fieldtype": "Check",
       "label": "Análisis omitido por tiempo"
+    },
+    {
+      "default": "0",
+      "fieldname": "consultas_complementarias",
+      "fieldtype": "Int",
+      "label": "Consultas complementarias"
+    },
+    {
+      "default": "0",
+      "fieldname": "latencia_analisis_ms",
+      "fieldtype": "Int",
+      "label": "Latencia del análisis (ms)"
+    },
+    {
+      "fieldname": "hallazgos",
+      "fieldtype": "Data",
+      "label": "Hallazgos (códigos)"
     }
   ],
   "index_web_pages_for_search": 0,

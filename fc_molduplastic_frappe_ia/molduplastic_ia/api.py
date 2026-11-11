@@ -30,6 +30,9 @@ from fc_molduplastic_frappe_ia.molduplastic_ia.permissions import (
 	get_user_aseguradoras,
 	lista_aseguradoras,
 )
+from fc_molduplastic_frappe_ia.molduplastic_ia import hallazgos as _hallazgos
+from fc_molduplastic_frappe_ia.molduplastic_ia import analisis as _calc
+from fc_molduplastic_frappe_ia.molduplastic_ia.analisis import TiempoAgotado
 from fc_molduplastic_frappe_ia.molduplastic_ia.intencion import clasificar
 from fc_molduplastic_frappe_ia.molduplastic_ia.query_executor import ejecutar
 from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import (
@@ -6525,6 +6528,9 @@ def _log_llamada(
 			"modo_respuesta": modo or info.get("modo") or "",
 			"intencion": intencion or info.get("intencion") or "",
 			"analisis_omitido": 1 if analisis_omitido else 0,
+			"consultas_complementarias": info.get("consultas_complementarias") or 0,
+			"latencia_analisis_ms": info.get("latencia_analisis_ms") or 0,
+			"hallazgos": info.get("hallazgos") or "",
 		}
 	)
 	doc.insert(ignore_permissions=True)
@@ -6696,6 +6702,308 @@ def _presupuesto_analisis_seg():
 	"""Segundos para la respuesta analítica (acotado por la validación de Settings)."""
 	s = frappe.get_cached_doc("Molduplastic IA Settings")
 	return min(max(int(s.presupuesto_analisis_seg or 60), 5), 60)
+
+
+def _config_analisis():
+	"""Umbrales del análisis, todos desde Molduplastic IA Settings."""
+	s = frappe.get_cached_doc("Molduplastic IA Settings")
+	return {
+		"min_base": int(s.min_piezas_porcentaje or 50),
+		"umbral_pp": float(s.umbral_caida_pp or 5),
+		"umbral_concentracion": float(s.umbral_concentracion_pct or 60),
+		"tendencia_periodos": int(s.tendencia_periodos or 0),
+		"comparar_ano_anterior": bool(s.comparar_ano_anterior),
+	}
+
+
+def _verificar_tiempo(deadline):
+	"""Corta el análisis entre consultas: una consulta en curso no se interrumpe."""
+	if deadline is not None and time.time() >= deadline:
+		raise TiempoAgotado("Se agotó el presupuesto de tiempo del análisis.")
+
+
+def _inicio_de_datos(universo):
+	"""Primer día con piezas en el alcance (None si no se conoce)."""
+	texto = (periodo_datos(universo) or {}).get("desde")
+	if not texto:
+		return None
+	return frappe.utils.getdate(str(texto)[:10])
+
+
+def _desplazar_anios(rango, anios):
+	"""El mismo rango corrido `anios` años (con sus horas de inicio y fin)."""
+	desde = frappe.utils.add_years(frappe.utils.getdate(rango[0]), anios)
+	hasta = frappe.utils.add_years(frappe.utils.getdate(rango[1]), anios)
+	return f"{_dia(desde)} 00:00:00", f"{_dia(hasta)} 23:59:59"
+
+
+def _filtros_sin_fecha(spec):
+	"""Filtros globales que no son fecha ni la definición de recolectable: cada
+	consulta derivada pone sus propias fechas y la unión de recolectadas."""
+	return {
+		k: v
+		for k, v in (spec.get("filters") or {}).items()
+		if k not in CAMPOS_DE_FECHA and k != "recolectable"
+	}
+
+
+def _medir_efectividad(filtros, rango, user, alcance, deadline, consultas):
+	"""Ingresadas, recolectadas y efectividad de un período, sin agrupar.
+
+	Usa las mismas agregaciones que la efectividad principal: el total de la
+	base de comparación sale de aquí, no de sumar filas agrupadas.
+	"""
+	_verificar_tiempo(deadline)
+	spec = validar_spec({
+		"doctype": "Pieza",
+		"fields": [],
+		"filters": dict(filtros),
+		"aggregations": _aggs_efectividad(rango[0], rango[1]),
+		"group_by": [],
+		"order_by": [],
+		"limit": 1,
+		"render_chart": None,
+		"out_of_scope": False,
+	})
+	resultado = ejecutar(spec, user, alcance=alcance)
+	consultas.append(spec)
+	filas = _porcentajes(spec, resultado)
+	if not filas:
+		return {"ingresadas": 0, "recolectadas": 0, "pct": None}
+	fila = filas[0]
+	return {"ingresadas": fila["total"], "recolectadas": fila["recuperadas"], "pct": fila["pct"]}
+
+
+def _medir_grupos_efectividad(filtros, rango, dims, user, alcance, deadline, consultas):
+	"""Efectividad por grupo sobre TODOS los grupos del período (sin el top ni el corte).
+
+	La consulta principal puede venir truncada (top N, min_ingresadas, limit): los
+	extremos y la concentración se calculan aquí para no mirar solo una parte.
+	"""
+	_verificar_tiempo(deadline)
+	spec = validar_spec({
+		"doctype": "Pieza",
+		"fields": [],
+		"filters": dict(filtros),
+		"aggregations": _aggs_efectividad(rango[0], rango[1]),
+		"group_by": list(dims),
+		"order_by": [],
+		"limit": 500,
+		"render_chart": None,
+		"out_of_scope": False,
+	})
+	resultado = ejecutar(spec, user, alcance=alcance)
+	consultas.append(spec)
+	return _porcentajes(spec, resultado)
+
+
+def _comparativo(actual, medida, rango, inicio):
+	"""Comparación contra otro período. Sin datos en la base, no hay porcentaje."""
+	if medida is None:
+		return {"rango": list(rango), "sin_datos": True, "pct": None, "ingresadas": None,
+			"variacion_pp": None}
+	return {
+		"rango": list(rango),
+		"sin_datos": False,
+		"ingresadas": medida["ingresadas"],
+		"pct": medida["pct"],
+		"variacion_pp": _calc.puntos_pp(actual["pct"], medida["pct"]),
+	}
+
+
+def _calcular_efectividad(spec, resultado, universo, user, alcance, deadline, cfg, consultas):
+	rango = _rango_del_spec(spec) or _periodo_mes_actual()
+	filtros = _filtros_sin_fecha(spec)
+	inicio = _inicio_de_datos(universo)
+	actual = _medir_efectividad(filtros, rango, user, alcance, deadline, consultas)
+
+	def medir_si_hay_datos(otro):
+		if inicio and frappe.utils.getdate(otro[1]) < inicio:
+			return None
+		return _medir_efectividad(filtros, otro, user, alcance, deadline, consultas)
+
+	anterior_rango = _periodo_anterior(rango)
+	anterior = medir_si_hay_datos(anterior_rango)
+	anio_rango = _desplazar_anios(rango, -1)
+	comparar_anio = cfg.get("comparar_ano_anterior", True)
+	anio = medir_si_hay_datos(anio_rango) if comparar_anio else None
+	comparativos = {
+		"periodo_anterior": _comparativo(actual, anterior, anterior_rango, inicio),
+		"mismo_periodo_ano_anterior": _comparativo(actual, anio, anio_rango, inicio),
+	}
+	if not comparar_anio:
+		comparativos["mismo_periodo_ano_anterior"]["desactivado"] = True
+	sin_base = [
+		{"comparativo": nombre, "motivo": "sin datos en la base"}
+		for nombre, c in comparativos.items()
+		if c["sin_datos"] and not c.get("desactivado")
+	]
+
+	# Tendencia: períodos anteriores encadenados, del más viejo al actual.
+	serie = []
+	cursor = rango
+	for _ in range(cfg["tendencia_periodos"]):
+		cursor = _periodo_anterior(cursor)
+		if inicio and frappe.utils.getdate(cursor[1]) < inicio:
+			break
+		medida = _medir_efectividad(filtros, cursor, user, alcance, deadline, consultas)
+		serie.insert(0, (_fecha_legible(cursor[0]), medida["pct"]))
+	serie.append((_fecha_legible(rango[0]), actual["pct"]))
+	tendencia = _calc.tendencia(serie) if len(serie) > 1 else []
+
+	no_recolectadas = actual["ingresadas"] - actual["recolectadas"]
+	concentracion = None
+	extremos = {"mejor": None, "peor": None, "atipicos": []}
+	if spec.get("group_by"):
+		# Sin agrupar hay una sola fila (el total): no hay grupos que comparar ni
+		# que concentren nada. Con agrupación, los grupos salen de una consulta
+		# propia sobre todo el período; el total de la concentración es el de la
+		# base sin agrupar, no la suma de las filas.
+		filas = _medir_grupos_efectividad(
+			filtros, rango, spec["group_by"], user, alcance, deadline, consultas
+		)
+		pares = [(f["grupo"], (f["total"] or 0) - (f["recuperadas"] or 0)) for f in filas]
+		concentracion = _calc.concentracion(pares, no_recolectadas, 3)
+		if concentracion and no_recolectadas < cfg["min_base"]:
+			concentracion = None
+		extremos = _calc.extremos(
+			[{"grupo": f["grupo"], "pct": f["pct"], "base": f["total"]} for f in filas],
+			cfg["min_base"],
+		)
+	objetivo = objetivo_efectividad()
+	return {
+		"tipo": "efectividad",
+		"periodo": {"desde": rango[0], "hasta": rango[1]},
+		"total": {
+			"ingresadas": actual["ingresadas"],
+			"recolectadas": actual["recolectadas"],
+			"no_recolectadas": no_recolectadas,
+			"pct": actual["pct"],
+		},
+		"comparativos": comparativos,
+		"objetivo": {
+			"valor": objetivo,
+			"actual": actual["pct"],
+			"brecha_pp": _calc.brecha_objetivo(actual["pct"], objetivo),
+		},
+		"concentracion": concentracion,
+		"extremos": extremos,
+		"tendencia": tendencia,
+		"sin_base": sin_base,
+	}
+
+
+def _calcular_conteo(spec, resultado, user, alcance, deadline, consultas):
+	"""Concentración de un conteo agrupado: cuántos grupos explican el total."""
+	alias = str(spec["aggregations"][0].get("alias") or "").lower()
+	columnas = [str(c).lower() for c in resultado.get("columnas") or []]
+	if alias not in columnas:
+		return None
+	i_valor = columnas.index(alias)
+	grupos = [str(g).lower() for g in spec.get("group_by") or []]
+	indices = [columnas.index(g) for g in grupos if g in columnas]
+	pares = []
+	for fila in resultado.get("filas") or []:
+		etiqueta = " / ".join(
+			str(_valor_legible(fila[i], resultado["columnas"][i])) for i in indices
+		)
+		pares.append((etiqueta, fila[i_valor]))
+	_verificar_tiempo(deadline)
+	total_spec = validar_spec({
+		"doctype": "Pieza",
+		"fields": [],
+		"filters": dict(spec.get("filters") or {}),
+		"aggregations": spec["aggregations"],
+		"group_by": [],
+		"order_by": [],
+		"limit": 1,
+		"render_chart": None,
+		"out_of_scope": False,
+	})
+	total_res = ejecutar(total_spec, user, alcance=alcance)
+	consultas.append(total_spec)
+	total = (total_res.get("filas") or [[0]])[0][0] or 0
+	return {
+		"tipo": "conteo",
+		"total": {"valor": total},
+		"concentracion": _calc.concentracion(pares, total, 3),
+		"comparativos": {},
+		"objetivo": None,
+		"extremos": {"mejor": None, "peor": None, "atipicos": []},
+		"tendencia": [],
+		"sin_base": [],
+	}
+
+
+def _calcular_analisis(spec, resultado, universo, user, alcance, deadline):
+	"""Análisis determinista de la consulta principal, o None si no aplica."""
+	cfg = _config_analisis()
+	consultas = []
+	if _es_spec_efectividad(spec):
+		if not _porcentajes(spec, resultado):
+			return None
+		analisis = _calcular_efectividad(spec, resultado, universo, user, alcance, deadline, cfg, consultas)
+	elif (
+		spec.get("group_by")
+		and len(spec.get("aggregations") or []) == 1
+		and str(spec["aggregations"][0].get("func") or "").lower() in ("count", "sum")
+		and not spec.get("fields")
+	):
+		analisis = _calcular_conteo(spec, resultado, user, alcance, deadline, consultas)
+		if analisis is None:
+			return None
+	else:
+		return None
+	analisis["periodo"] = analisis.get("periodo") or {
+		"desde": (_rango_del_spec(spec) or _periodo_mes_actual())[0],
+		"hasta": (_rango_del_spec(spec) or _periodo_mes_actual())[1],
+	}
+	analisis["consultas"] = len(consultas)
+	return analisis
+
+
+def _analisis_completo(spec, resultado, universo, user, alcance, deadline):
+	"""Análisis + hallazgos + sugerencias para el modo analítico.
+
+	Un error inesperado en el análisis no tumba la respuesta: se registra y la
+	respuesta sale en modo breve. Solo el tiempo agotado se propaga, porque ahí
+	el dueño pidió la nota de "reduce el período".
+	"""
+	inicio = time.time()
+	try:
+		analisis = _calcular_analisis(spec, resultado, universo, user, alcance, deadline)
+	except TiempoAgotado:
+		raise
+	except Exception:
+		frappe.log_error(title="IA: análisis complementario", message=frappe.get_traceback())
+		return None
+	if analisis is None:
+		return None
+	s = frappe.get_cached_doc("Molduplastic IA Settings")
+	glosario = [
+		{"termino": f.termino, "accion": f.accion}
+		for f in (s.get("glosario") or [])
+		if f.estado == "Validado"
+	]
+	resumen = _hallazgos.construir(analisis, _config_analisis(), glosario)
+	return {
+		"analisis": analisis,
+		"hallazgos": resumen["hallazgos"],
+		"sugerencias": resumen["sugerencias"],
+		"consultas": analisis["consultas"],
+		"latencia_ms": int((time.time() - inicio) * 1000),
+	}
+
+
+def _metricas_analisis(pack):
+	"""Lo que el registro guarda del análisis: consultas extra, tiempo y hallazgos."""
+	if not pack:
+		return {}
+	return {
+		"consultas_complementarias": pack["consultas"],
+		"latencia_analisis_ms": pack["latencia_ms"],
+		"hallazgos": ",".join(h["codigo"] for h in pack["hallazgos"]),
+	}
 
 
 def _explicacion_en_codigo(spec, pregunta):
@@ -7053,20 +7361,24 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		)
 		explicado = False
 		if modo_pedido == "Analítico":
-			# Presupuesto de tiempo: si el análisis no termina, no se espera más.
-			# Se entrega la respuesta breve con una nota (decisión del dueño).
+			# Presupuesto de tiempo compartido por el análisis y la llamada al
+			# modelo. Si no alcanza, se entrega la respuesta breve con una nota
+			# (decisión del dueño): nada parcial.
+			deadline = time.time() + _presupuesto_analisis_seg()
 			try:
+				pack = _analisis_completo(spec, resultado, universo, user, alcance, deadline)
 				explicacion, info_exp = explain(
 					pregunta_det, spec, resultado, **argumentos,
 					modo="Analítico", intencion=intencion,
-					deadline=time.time() + _presupuesto_analisis_seg(),
+					deadline=deadline, analisis=pack,
 				)
+				info_exp.update(_metricas_analisis(pack))
 				_log_llamada(
 					info_exp, "explain", "Éxito", consulta_id, user, aseguradora_log,
 					historial=historial,
 				)
 				explicado = True
-			except LLMTiempoAgotado as e:
+			except (TiempoAgotado, LLMTiempoAgotado) as e:
 				analisis_omitido = True
 				_log_llamada(
 					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),

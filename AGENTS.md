@@ -58,7 +58,7 @@ Vocabulario registrado en el prompt: CDR=taller; **"no recolectadas en periodo" 
 
 ## Pendiente (decisiones del dueño)
 - Cargar API keys de DeepSeek/GLM en `Molduplastic IA Settings`; sin keys, `ask()` responde "servicio no disponible" (verificado en tests con mocks).
-- **Decisiones del dueño para el análisis (2026-11-10); fase 0 y fase 1 implementadas (ver "Análisis de respuestas"):**
+- **Decisiones del dueño para el análisis (2026-11-10); fases 0, 1 y 2 implementadas (ver "Análisis de respuestas"):**
   - Modo de respuesta (`Breve` / `Analítico`) solo en configuración del Asistente IA, nunca desde el cliente. Global + excepciones por intención; por defecto `Breve`.
   - Lectura analítica: primero por LLM; si el LLM falla, agota tiempo o no pasa la verificación de cifras, se usa plantilla de código.
   - Si el análisis excede el presupuesto de tiempo, se entrega la respuesta breve con la nota: "El análisis completo tardó demasiado para este período. Para verlo, reduce el período (por ejemplo, a un mes) o acota una dimensión." Se registra en `IA API Log`.
@@ -694,4 +694,29 @@ En `asistente-ia`, el botón junto al título muestra el consumo del **mes en cu
 **Pendiente de fases siguientes:** preguntas sugeridas como botones (dependen de playbooks y hallazgos, fase 2-3); lectura de los casos de plantilla y comparativos calculados (`analisis.py`, fase 2); detectores con base mínima de 50 solo para porcentajes (fase 2); verificación de cifras (fase 3). En la fase 1 el modo analítico no tiene comparativos reales: la lectura se limita a lo que ya viene en Datos.
 
 Tests: `tests/test_analisis.py` (modo, objetivo, validación, glosario, timeout, `ask` con modo y nota) y `tests/test_intencion.py`.
+
+## Fase 2: análisis determinista (2026-11-11)
+
+**Dónde vive.** `analisis.py` (cálculos puros: porcentaje, variación, puntos pp, brecha, concentración, extremos, atípicos z≥2 con ≥5 grupos, tendencia) y `hallazgos.py` (detectores puros con umbrales por parámetro, severidad, sugerencias solo con glosario `Validado`). `api._calcular_analisis` arma las consultas derivadas con `validar_spec` + `ejecutar` y el mismo alcance que la principal. `ask()` lo llama solo en modo Analítico, dentro del mismo presupuesto de tiempo que la llamada al modelo.
+
+**Reglas que no se negocian (fijadas por prueba):**
+- Sin base de comparación no hay porcentaje ni variación: se devuelve `None`, nunca 0. Una base cero da variación absoluta y porcentual `None`.
+- El mínimo de piezas (`min_piezas_porcentaje`, 50) aplica solo a porcentajes: efectividad, caída contra período anterior, atípicos y concentración.
+- Los totales de comparación salen de consultas **sin agrupar**, no de sumar filas (el GROUP BY se trunca con el LIMIT).
+- Efectividad **agrupada**: extremos y concentración salen de una consulta propia sobre todo el período (`limit 500`), no de la principal, que puede venir truncada por top N o `min_ingresadas`. Sin agrupación no hay concentración ni extremos.
+- Severidad: diferencia que no cruza el umbral = `baja` (se registra, no alerta); cruza = `media`; al doble = `alta`.
+- Sugerencias: solo si hay hallazgo `media`/`alta` **y** una entrada del glosario `Validado` con acción para ese término. Con el glosario en Borrador no hay sugerencias, y es lo esperado.
+- Presupuesto: el análisis y la llamada al modelo comparten el deadline; si se agota entre consultas (`TiempoAgotado`) o dentro de la llamada (`LLMTiempoAgotado`), se entrega la breve con la nota. Un error inesperado del análisis se registra en Error Log y la respuesta sale breve **sin** nota.
+- Umbrales en Settings: `min_piezas_porcentaje` (50), `umbral_caida_pp` (5), `umbral_concentracion_pct` (60), `tendencia_periodos` (0, apagada por costo), `comparar_ano_anterior` (1). Parche `sembrar_umbrales_analisis`.
+
+**Costo medido en GNP (2026-11-11).** Efectividad de septiembre sin agrupar: 3.6 s (mes actual), 6.1 s (mes anterior), **31.4 s (mismo mes del año anterior)**, 8.8 s agrupada por taller. Un análisis completo por mes suma ~50 s sin contar el modelo: con el presupuesto de 60 s casi toda respuesta analítica por mes se omite. Un rango de año o una principal anual agrupada tardan más que el presupuesto (la principal no cuenta en el presupuesto porque corre antes). Por eso el comparativo anual es configurable. Si el tenant crece o la base cambia, medir de nuevo antes de subir el presupuesto (el máximo es 60 s; el proxy corta a 120 s).
+
+**Registro (`IA API Log`).** `consultas_complementarias`, `latencia_analisis_ms` y `hallazgos` (códigos separados por coma), además de `modo_respuesta`, `intencion` y `analisis_omitido` de la fase 1.
+
+**Pendiente de la fase 3 (no hecho).** La verificación de cifras: el modelo todavía puede escribir frases sin respaldo en Datos (verificado en la evidencia: "No hay comparativos ... ni objetivos configurados" en un conteo, aunque el objetivo sí existe). Hasta la fase 3 el modo Analítico debe tratarse como experimental.
+
+**Evidencia de pruebas (CSV).** `evidencia/` en la raíz del repositorio:
+- `pruebas_asistente.csv`: 11 preguntas reales con el LLM configurado (`origen=evidencia_real`, `tipo_llm=real`) más el inventario estático de las pruebas que preguntan al asistente. Regenerar: `bench --site <site> execute fc_molduplastic_frappe_ia.molduplastic_ia.tests.evidencia.generar` (gasta tokens reales).
+- `pruebas_ejecutadas.csv`: cada llamada a `ask()` que hacen las pruebas, con su respuesta y su origen medido durante la corrida (`simulada` si el LLM estaba parcheado; `real` si escribió consumo en `IA API Log`; `sin_llm` si la respuesta la armó el código). Generar: `MOLDUPLASTIC_EVIDENCIA=1 bench --site <site> run-tests --app fc_molduplastic_frappe_ia` (el hook está en `tests/__init__.py` y no cambia la corrida normal).
+- Hoy ninguna prueba automática contesta con el LLM real: todas las llamadas que lo tocan usan mocks.
 

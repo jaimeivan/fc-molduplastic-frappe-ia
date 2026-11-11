@@ -1531,21 +1531,29 @@ def _ordenar(spec, filas, porcentajes, asc=None):
 
 SYSTEM_EXPLAIN_ANALITICO = """MODO ANALÍTICO (activo en esta respuesta). Conserva todas las reglas de
 formato, encabezado, tablas y alcance de arriba. Además, la respuesta sigue esta
-estructura:
+estructura, en este orden:
 1. Respuesta directa: la cifra pedida, en una o dos líneas, después del encabezado.
-2. Lectura: de dos a cuatro puntos cortos que destaquen lo que sobresale (el mejor
-   y el peor grupo, si está por encima o por debajo del objetivo) usando solo cifras
-   que ya vienen en los Datos. Si los Datos no permiten comparar, omite la lectura.
+2. Lectura (solo si los Datos traen "analisis"): de dos a cuatro puntos cortos con
+   las cifras de "analisis": comparativo contra el período anterior y contra el
+   mismo período del año pasado (variacion_pp), brecha contra el objetivo, mejor y
+   peor grupo, concentración (participación de los grupos principales en el total) y
+   la tendencia. Si "comparativos" viene vacío, NO lo menciones: esta consulta no
+   compara períodos. Solo di "sin datos para comparar" cuando un comparativo trae
+   sin_datos o aparece en "sin_base" (la base de comparación no existe en la BD).
+3. Alertas (solo si "hallazgos" trae entradas de severidad media o alta): una línea
+   por hallazgo, con su "texto_base" tal cual. Los hallazgos de severidad baja no se
+   escriben como alerta.
+4. Sugerencias (solo si "sugerencias" trae entradas): una línea por sugerencia con
+   su "accion", tal cual viene. Si "sugerencias" está vacío, omite esta sección por
+   completo: no digas que no hay sugerencias.
+Si no hay nada que destacar (sin lectura posible, sin alertas), di UNA frase: "No
+hay hallazgos relevantes para este período." y nada más.
 Reglas que tienen prioridad sobre cualquier instrucción anterior de este prompt:
 - Prohibido calcular: no sumes, restes, promedies, dividas ni saques porcentajes ni
-  diferencias en puntos. Solo citas valores que ya vienen en los Datos (filas,
-  porcentajes y objetivo_efectividad). Si una diferencia no viene calculada, no la
-  escribas; di solo "por encima" o "por debajo" del objetivo.
+  diferencias. Todas las cifras ya vienen calculadas en "analisis", "hallazgos" o
+  "datos"; solo las citas, sin cambiarlas ni redondearlas de otra forma.
 - Interpretación: solo cualitativa y marcada como hipótesis ("podría deberse a…").
-  Nunca presentes una causa como hecho.
-- No propongas acciones ni sugerencias: en esta versión no hay hallazgos calculados.
-  Si la pregunta pide recomendaciones, dilo en una frase.
-- Si no hay nada que destacar, dilo en una frase en lugar de rellenar.
+  Nunca presentes una causa como hecho ni inventes acciones fuera de "sugerencias".
 """
 
 
@@ -1592,6 +1600,7 @@ def explain(
 	modo="Breve",
 	intencion=None,
 	deadline=None,
+	analisis=None,
 ):
 	"""Genera la explicación conversacional. Devuelve (texto, info_log).
 
@@ -1741,6 +1750,11 @@ def explain(
 	if total_rec is not None:
 		datos["recuperadas"] = total_rec[0] if len(total_rec) == 1 else None
 		datos["recolectadas_por_fila"] = total_rec
+	if analisis:
+		# Solo en modo analítico: el análisis ya viene calculado por el servidor.
+		datos["analisis"] = analisis["analisis"]
+		datos["hallazgos"] = analisis["hallazgos"]
+		datos["sugerencias"] = analisis["sugerencias"]
 	# El modo lo decide el servidor (ask), nunca el cliente. En "Breve" el prompt
 	# es exactamente el de siempre: el camino de respuesta breve no cambia.
 	analitico = modo == "Analítico"
@@ -1778,4 +1792,8 @@ def explain(
 	info["datos"] = datos
 	info["modo"] = "Analítico" if analitico else "Breve"
 	info["intencion"] = intencion or ""
+	if analisis:
+		info["consultas_complementarias"] = analisis["consultas"]
+		info["latencia_analisis_ms"] = analisis["latencia_ms"]
+		info["hallazgos"] = ",".join(h["codigo"] for h in analisis["hallazgos"])
 	return texto, info

@@ -39,6 +39,11 @@
     "objetivo_efectividad",
     "column_break_analisis",
     "presupuesto_analisis_seg",
+    "min_piezas_porcentaje",
+    "umbral_caida_pp",
+    "umbral_concentracion_pct",
+    "tendencia_periodos",
+    "comparar_ano_anterior",
     "modo_excepciones",
     "glosario_section",
     "glosario"
@@ -248,6 +253,45 @@
       "label": "Presupuesto de tiempo del análisis (segundos)",
       "description": "Si la respuesta analítica no termina en este tiempo, se entrega la respuesta breve con una nota. Máximo 60.",
       "reqd": 1
+    },
+    {
+      "default": "50",
+      "fieldname": "min_piezas_porcentaje",
+      "fieldtype": "Int",
+      "label": "Mínimo de piezas para hallazgos de porcentaje",
+      "description": "Un porcentaje (efectividad, comparativos) solo genera hallazgo si la base tiene al menos esta cantidad de ingresadas. No aplica a conteos ni listados.",
+      "reqd": 1
+    },
+    {
+      "default": "5",
+      "fieldname": "umbral_caida_pp",
+      "fieldtype": "Float",
+      "label": "Umbral de caída de efectividad (puntos)",
+      "description": "Puntos porcentuales por debajo del objetivo o del período anterior a partir de los cuales se alerta. El doble se marca como alta severidad.",
+      "reqd": 1
+    },
+    {
+      "default": "60",
+      "fieldname": "umbral_concentracion_pct",
+      "fieldtype": "Float",
+      "label": "Umbral de concentración (%)",
+      "description": "Participación de los 3 grupos principales en las piezas no recolectadas a partir de la cual se alerta.",
+      "reqd": 1
+    },
+    {
+      "default": "0",
+      "fieldname": "tendencia_periodos",
+      "fieldtype": "Int",
+      "label": "Períodos de tendencia",
+      "description": "Cuántos períodos anteriores se muestran en la tendencia (0 a 6). Cada período es una consulta completa: con tenants grandes consume el presupuesto de tiempo. 0 la desactiva.",
+      "reqd": 1
+    },
+    {
+      "default": "1",
+      "fieldname": "comparar_ano_anterior",
+      "fieldtype": "Check",
+      "label": "Comparar contra el mismo período del año anterior",
+      "description": "Medido el 2026-11-11 en GNP: el mismo mes de 2025 tarda ~31 s, casi todo el presupuesto de tiempo. Desactívelo si las respuestas analíticas se quedan sin análisis por tiempo."
     },
     {
       "fieldname": "modo_excepciones",

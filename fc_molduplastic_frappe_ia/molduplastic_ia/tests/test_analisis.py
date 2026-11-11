@@ -201,6 +201,11 @@ class TestExplainModos(ConfigMixin, FrappeTestCase):
 		self.assertIn("MODO ANALÍTICO", sistema)
 		self.assertTrue(sistema.startswith(F.SYSTEM_EXPLAIN))
 
+	def test_prompt_analitico_no_convierte_un_comparativo_vacio_en_falta_de_datos(self):
+		# Un conteo no trae comparativos: el modelo no debe leer eso como "sin datos".
+		self.assertIn("NO lo menciones", F.SYSTEM_EXPLAIN_ANALITICO)
+		self.assertIn("sin_base", F.SYSTEM_EXPLAIN_ANALITICO)
+
 	def test_glosario_solo_con_entradas_validadas_de_la_intencion(self):
 		filas = frappe.get_all(
 			"IA Glosario", filters={"intencion": "efectividad"}, pluck="name"
