@@ -1,0 +1,183 @@
+{
+ "actions": [],
+ "autoname": "field:id",
+ "creation": "2026-11-11 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "id",
+  "intencion",
+  "estado",
+  "cb1",
+  "universo",
+  "pregunta",
+  "que_se_espera",
+  "sec_respuesta",
+  "respuesta",
+  "preguntas_sugeridas",
+  "verificacion",
+  "modo_configurado",
+  "fecha_respuesta",
+  "sec_revision",
+  "analiza",
+  "sugiere_con_sustento",
+  "inventa_cifras",
+  "cb2",
+  "revisor",
+  "fecha_revision",
+  "notas"
+ ],
+ "fields": [
+  {
+   "fieldname": "id",
+   "fieldtype": "Data",
+   "label": "ID",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "intencion",
+   "fieldtype": "Data",
+   "label": "Intención",
+   "in_list_view": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "estado",
+   "fieldtype": "Select",
+   "label": "Estado",
+   "options": "Pendiente\nRevisada",
+   "default": "Pendiente",
+   "in_list_view": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "cb1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "universo",
+   "fieldtype": "Data",
+   "label": "Universo a consultar",
+   "description": "Aseguradora (p. ej. GNP) o TODAS. Solo lo usa el botón Preguntar."
+  },
+  {
+   "fieldname": "pregunta",
+   "fieldtype": "Small Text",
+   "label": "Pregunta",
+   "reqd": 1
+  },
+  {
+   "fieldname": "que_se_espera",
+   "fieldtype": "Small Text",
+   "label": "Qué se espera",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sec_respuesta",
+   "fieldtype": "Section Break",
+   "label": "Respuesta del asistente"
+  },
+  {
+   "fieldname": "respuesta",
+   "fieldtype": "Long Text",
+   "label": "Respuesta",
+   "read_only": 1
+  },
+  {
+   "fieldname": "preguntas_sugeridas",
+   "fieldtype": "Small Text",
+   "label": "Preguntas sugeridas",
+   "read_only": 1
+  },
+  {
+   "fieldname": "verificacion",
+   "fieldtype": "Data",
+   "label": "Verificación de cifras",
+   "read_only": 1
+  },
+  {
+   "fieldname": "modo_configurado",
+   "fieldtype": "Data",
+   "label": "Modo al preguntar",
+   "read_only": 1
+  },
+  {
+   "fieldname": "fecha_respuesta",
+   "fieldtype": "Datetime",
+   "label": "Fecha de la respuesta",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sec_revision",
+   "fieldtype": "Section Break",
+   "label": "Revisión del administrador"
+  },
+  {
+   "fieldname": "analiza",
+   "fieldtype": "Check",
+   "label": "¿Analiza?",
+   "description": "La respuesta interpreta los datos (comparativo, concentración, brecha), no solo los repite."
+  },
+  {
+   "fieldname": "sugiere_con_sustento",
+   "fieldtype": "Check",
+   "label": "¿Sugiere con sustento?",
+   "description": "Si sugiere algo, sale de un hallazgo o del glosario Validado. Sin sustento, no marcar."
+  },
+  {
+   "fieldname": "inventa_cifras",
+   "fieldtype": "Check",
+   "label": "¿Inventa cifras?",
+   "description": "Hay alguna cifra que no está en el resultado de la consulta. Debe quedar sin marcar."
+  },
+  {
+   "fieldname": "cb2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "revisor",
+   "fieldtype": "Link",
+   "label": "Revisor",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "fecha_revision",
+   "fieldtype": "Datetime",
+   "label": "Fecha de revisión",
+   "read_only": 1
+  },
+  {
+   "fieldname": "notas",
+   "fieldtype": "Small Text",
+   "label": "Notas"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-11 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Molduplastic IA",
+ "name": "IA Evaluacion",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

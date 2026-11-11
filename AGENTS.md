@@ -739,3 +739,11 @@ Tests: `tests/test_analisis.py` (modo, objetivo, validación, glosario, timeout,
 
 **Pendiente.** Probar el chat en navegador (los botones solo tienen `node --check`). La verificación no cubre cifras correctas escritas con otro significado (una cifra que coincide por casualidad). Las estimaciones de rangos largos se quedan cortas: medir antes de activar el modo analítico para periodos anuales.
 
+## Ajustes del 2026-11-11 (cierre de fases 1-3)
+
+- **Proxy a 120 s.** `config/nginx.conf` (`location @webserver`): `proxy_read_timeout 120` y `proxy_send_timeout 120` (antes solo la lectura). Validado con `nginx -t` y recargado. La tabla de tiempos de espera (balanceador externo, nginx, gunicorn `-t 6000`, presupuesto, reserva, LLM) está en `README.md`. **Si la app pasa a otro servidor, revisar esa tabla antes de activar el modo analítico.**
+- **Rangos de más de un mes: solo breve con aviso.** `DIAS_MAXIMOS_ANALISIS = 31` y `NOTA_PERIODO_LARGO` (`api.py`). En modo Analítico, un periodo más largo no ejecuta el análisis ni la lectura (aplica también a las respuestas que arma el código). Test en `test_fase3.TestPeriodoLargo`.
+- **Revisión del set de evaluación en el Desk.** DocType `IA Evaluacion` (solo System Manager), botón *Preguntar al asistente* (`evaluacion.preguntar_evaluacion`) que usa el universo de la fila y el modo configurado, y resumen con `evaluacion.resumen_evaluacion`. Carga inicial desde `evaluacion/preguntas_evaluacion.csv` (parche `sembrar_evaluacion_ia`, idempotente). Ver `evaluacion/LEEME.md`.
+- **Permiso de evaluación con chequeo explícito.** `frappe.only_for` no comprueba nada cuando corre en pruebas (`flags.in_test`), así que `evaluacion._solo_administradores` revisa `System Manager` en los roles. Usar el mismo patrón en código nuevo que deba probar permisos.
+- Pruebas: `tests/test_evaluacion.py` (permisos, revisión, carga idempotente, resumen) y `test_fase3.TestPeriodoLargo`.
+

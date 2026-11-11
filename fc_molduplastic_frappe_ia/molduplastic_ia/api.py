@@ -6709,6 +6709,13 @@ NOTA_TIEMPO_PREVISTO = (
 	"tiempo disponible. Reduce el período (por ejemplo, a un mes) o acota una dimensión "
 	"y vuelve a preguntar."
 )
+# El análisis completo es para periodos de un mes (2026-11-11): un periodo más
+# largo responde en breve y lo dice.
+DIAS_MAXIMOS_ANALISIS = 31
+NOTA_PERIODO_LARGO = (
+	"El análisis completo solo está disponible para periodos de un mes. Este periodo es "
+	"más largo: se muestra la respuesta breve. Para analizarlo, elige un mes."
+)
 NOTA_SIN_TIEMPO = (
 	"No alcanzó el tiempo para redactar la respuesta. Reduce el período o acota una "
 	"dimensión y vuelve a preguntar."
@@ -7046,6 +7053,16 @@ def _analisis_completo(spec, resultado, universo, user, alcance, presupuesto):
 		"consultas": analisis["consultas"],
 		"latencia_ms": int((time.time() - inicio) * 1000),
 	}
+
+
+def _periodo_es_largo(spec):
+	"""True si el período consultado tiene más de DIAS_MAXIMOS_ANALISIS días."""
+	rango = _rango_del_spec(spec)
+	if not rango:
+		return False
+	desde = frappe.utils.getdate(str(rango[0])[:10])
+	hasta = frappe.utils.getdate(str(rango[1])[:10])
+	return (hasta - desde).days + 1 > DIAS_MAXIMOS_ANALISIS
 
 
 def _encabezado_de(argumentos):
@@ -7468,6 +7485,10 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	analisis_omitido = False
 	nota_analisis = ""
 	pack = None
+	periodo_largo = modo_pedido == "Analítico" and _periodo_es_largo(spec)
+	if periodo_largo:
+		analisis_omitido = True
+		nota_analisis = NOTA_PERIODO_LARGO
 	if explicacion_en_codigo:
 		_log_llamada(
 			{"modo": "Código", "intencion": intencion}, "explain", "Éxito", consulta_id,
@@ -7481,7 +7502,7 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 			titulo_texto=_titulo_respuesta_para(spec, pregunta_det),
 		)
 		explicado = False
-		if modo_pedido == "Analítico":
+		if modo_pedido == "Analítico" and not periodo_largo:
 			# Presupuesto total desde que llega la pregunta; la reserva deja tiempo
 			# para la respuesta breve de respaldo dentro de los 120 s del proxy.
 			presupuesto = _Presupuesto(

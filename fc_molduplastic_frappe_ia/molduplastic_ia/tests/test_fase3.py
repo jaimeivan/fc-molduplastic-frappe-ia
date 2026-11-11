@@ -253,3 +253,55 @@ class TestPlaybooks(FrappeTestCase):
 	def test_tipo_sin_playbook_no_sugiere_nada(self):
 		self.assertEqual(playbooks.preguntas_para("inventado"), [])
 		self.assertEqual(playbooks.preguntas_para("conteo"), [])
+
+
+SPEC_ANIO = {**SPEC, "filters": {"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-12-31 23:59:59"]}}
+SPEC_MES = {**SPEC, "filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]}}
+
+
+class TestPeriodoLargo(ConfigFase3):
+	def test_un_mes_no_es_largo_y_un_anio_si(self):
+		self.assertFalse(api._periodo_es_largo(SPEC_MES))
+		self.assertTrue(api._periodo_es_largo(SPEC_ANIO))
+
+	def test_treinta_y_uno_dias_no_es_largo_treinta_y_dos_si(self):
+		treinta_y_uno = {**SPEC, "filters": {"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-01-31 23:59:59"]}}
+		treinta_y_dos = {**SPEC, "filters": {"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-02-01 23:59:59"]}}
+		self.assertFalse(api._periodo_es_largo(treinta_y_uno))
+		self.assertTrue(api._periodo_es_largo(treinta_y_dos))
+
+	def test_sin_fechas_no_es_largo(self):
+		self.assertFalse(api._periodo_es_largo(SPEC))
+
+	@patch.object(api, "generate_spec", return_value=(SPEC_ANIO, INFO))
+	def test_anual_en_analitico_responde_breve_con_aviso_y_sin_analisis(self, _spec):
+		with patch.object(api, "_analisis_completo") as analisis, \
+			patch.object(api, "explain", return_value=("Breve.", INFO)) as mock_exp:
+			res = api.ask("piezas recolectadas en el año 2026")
+		analisis.assert_not_called()
+		self.assertNotIn("analisis", mock_exp.call_args.kwargs)
+		self.assertIn(api.NOTA_PERIODO_LARGO, res["respuesta"])
+		self.assertEqual(res["preguntas_sugeridas"], [])
+
+	@patch.object(api, "generate_spec", return_value=(SPEC_ANIO, INFO))
+	def test_anual_en_codigo_tambien_avisa(self, _spec):
+		with patch.object(api, "_explicacion_en_codigo", return_value=True), \
+			patch.object(api, "explain") as mock_exp:
+			res = api.ask("piezas recolectadas en el año 2026")
+		mock_exp.assert_not_called()
+		self.assertIn(api.NOTA_PERIODO_LARGO, res["respuesta"])
+
+	@patch.object(api, "generate_spec", return_value=(SPEC_MES, INFO))
+	def test_mes_en_analitico_si_analiza(self, _spec):
+		with patch.object(api, "_analisis_completo", return_value=PACK) as analisis, \
+			patch.object(api, "explain", return_value=("El total es 80.0%.", _info())):
+			res = api.ask("piezas recolectadas en septiembre de 2026")
+		analisis.assert_called_once()
+		self.assertNotIn(api.NOTA_PERIODO_LARGO, res["respuesta"])
+
+	@patch.object(api, "generate_spec", return_value=(SPEC_ANIO, INFO))
+	def test_anual_en_breve_no_avisa(self, _spec):
+		self.configurar(modo_respuesta="Breve")
+		with patch.object(api, "explain", return_value=("Breve.", INFO)):
+			res = api.ask("piezas recolectadas en el año 2026")
+		self.assertNotIn(api.NOTA_PERIODO_LARGO, res["respuesta"])
