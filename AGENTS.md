@@ -19,7 +19,11 @@ App Frappe (`Molduplastic IA`) sobre bench en `/home/frappe/frappe-bench`, site 
 ```bash
 bench --site molduplastic.jarritohost.net migrate
 bench --site molduplastic.jarritohost.net run-tests --app fc_molduplastic_frappe_ia
-bench restart   # obligatorio tras tocar hooks.py (workers cachean hooks)
+bench restart   # obligatorio tras tocar hooks.py **y tras cualquier cambio en Python**:
+                # gunicorn/workers mantienen los módulos cargados en memoria; sin
+                # restart el site sigue ejecutando el código anterior (pasó el
+                # 2026-11-11: el modo Analítico no llegaba a `ask()` y el registro
+                # seguía diciendo Breve; el restart lo arregló)
 ```
 
 ## Tenant: cómo funciona aquí
@@ -737,12 +741,14 @@ Tests: `tests/test_analisis.py` (modo, objetivo, validación, glosario, timeout,
 
 **Evidencia real (2026-11-11, LLM real, corrida final).** `pruebas_asistente.csv`: efectividad mensual analítica → verificación `Aprobada`, 3 sugeridas; por región y por taller → aviso de tiempo previsto (34 s); conteo por marca → `Reintentada` (corrigió la cifra 47); breve → `Con cifras sin respaldo` en 2 casos (la breve calcula "55.0 puntos" que no está en Datos). `pruebas_ejecutadas.csv`: 57 llamadas de la suite, 55 simuladas y 2 sin LLM.
 
-**Pendiente.** Probar el chat en navegador (los botones solo tienen `node --check`). La verificación no cubre cifras correctas escritas con otro significado (una cifra que coincide por casualidad). Las estimaciones de rangos largos se quedan cortas: medir antes de activar el modo analítico para periodos anuales.
+**Pendiente.** La verificación no cubre cifras correctas escritas con otro significado (una cifra que coincide por casualidad). Las estimaciones de rangos largos se quedan cortas: medir antes de activar el modo analítico para periodos anuales.
+
+**Verificado en navegador (2026-11-11, Chromium/Playwright contra el site local).** Chat de `asistente-ia` con sesión de administrador: la página carga, el selector de período trae las 10 opciones (9 presets + Personalizado), la fila de período es visible, hay 9 chips de sugerencias; una pregunta determinista (CDR con mayor % de no entregadas en septiembre) devuelve la tabla, el selector se ajusta a `personalizado` y el período sobrevive a la recarga; en modo Analítico la respuesta trae la lectura y **tres botones de preguntas sugeridas**, y un clic dispara una pregunta nueva por el mismo flujo (`enviarPregunta`). El único 404 es el logo del site (`/files/molduplastic-logo-sm.png`, configuración previa, ajeno a la app). Para repetirlo: sesión con `frappe.sessions.Session` (antes hay que poblar `frappe.local.request/form_dict/request_ip`) y Chromium con `--host-resolver-rules=MAP <dominio> 127.0.0.1`; los scripts quedaron en `/tmp/opencode/prueba_chat.py` y `/tmp/opencode/prueba_sugeridas.py`.
 
 ## Ajustes del 2026-11-11 (cierre de fases 1-3)
 
 - **Proxy a 120 s.** `config/nginx.conf` (`location @webserver`): `proxy_read_timeout 120` y `proxy_send_timeout 120` (antes solo la lectura). Validado con `nginx -t` y recargado. La tabla de tiempos de espera (balanceador externo, nginx, gunicorn `-t 6000`, presupuesto, reserva, LLM) está en `README.md`. **Si la app pasa a otro servidor, revisar esa tabla antes de activar el modo analítico.**
-- **Rangos de más de un mes: solo breve con aviso.** `DIAS_MAXIMOS_ANALISIS = 31` y `NOTA_PERIODO_LARGO` (`api.py`). En modo Analítico, un periodo más largo no ejecuta el análisis ni la lectura (aplica también a las respuestas que arma el código). Test en `test_fase3.TestPeriodoLargo`.
+- **Rangos de más de un mes: solo breve con aviso, con el tope configurable.** `dias_maximos_analisis` en `Molduplastic IA Settings` (default 31, válido 1–366; un valor corrupto cae a 31 y uno mayor se recorta a 366) lo lee `api._dias_maximos_analisis()`, y `_periodo_es_largo(spec)` compara el rango del spec contra esos días. El aviso lo arma `_nota_periodo_largo()`: con 31 dice el texto original `NOTA_PERIODO_LARGO`; con otro valor nombra los días configurados. En modo Analítico, un periodo más largo no ejecuta el análisis ni la lectura (aplica también a las respuestas que arma el código). Parche `sembrar_dias_maximos_analisis` (fija 31 si el Single no lo tiene guardado). Tests en `test_fase3.TestPeriodoLargo` (umbral por configuración, 45 días con tope 60, aviso con los días, respaldo de valor inválido y validación 1–366).
 - **Revisión del set de evaluación en el Desk.** DocType `IA Evaluacion` (solo System Manager), botón *Preguntar al asistente* (`evaluacion.preguntar_evaluacion`) que usa el universo de la fila y el modo configurado, y resumen con `evaluacion.resumen_evaluacion`. Carga inicial desde `evaluacion/preguntas_evaluacion.csv` (parche `sembrar_evaluacion_ia`, idempotente). Ver `evaluacion/LEEME.md`.
 - **Permiso de evaluación con chequeo explícito.** `frappe.only_for` no comprueba nada cuando corre en pruebas (`flags.in_test`), así que `evaluacion._solo_administradores` revisa `System Manager` en los roles. Usar el mismo patrón en código nuevo que deba probar permisos.
 - Pruebas: `tests/test_evaluacion.py` (permisos, revisión, carga idempotente, resumen) y `test_fase3.TestPeriodoLargo`.

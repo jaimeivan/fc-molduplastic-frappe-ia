@@ -35,7 +35,7 @@ class ConfigFase3(FrappeTestCase):
 		s = frappe.get_doc(SETTINGS)
 		self.previo = {k: s.get(k) for k in (
 			"modo_respuesta", "verificacion_cifras", "preguntas_sugeridas_activas",
-			"presupuesto_analisis_seg")}
+			"presupuesto_analisis_seg", "dias_maximos_analisis")}
 		self.addCleanup(self._restaurar)
 		frappe.set_user(USUARIO_GNP)
 		self.addCleanup(frappe.set_user, "Administrator")
@@ -305,3 +305,43 @@ class TestPeriodoLargo(ConfigFase3):
 		with patch.object(api, "explain", return_value=("Breve.", INFO)):
 			res = api.ask("piezas recolectadas en el año 2026")
 		self.assertNotIn(api.NOTA_PERIODO_LARGO, res["respuesta"])
+
+	def test_el_umbral_sale_de_configuracion(self):
+		self.assertEqual(api._dias_maximos_analisis(), 31)
+		self.configurar(dias_maximos_analisis=60)
+		self.assertEqual(api._dias_maximos_analisis(), 60)
+
+	def test_con_60_dias_un_rango_de_45_si_se_analiza(self):
+		self.configurar(dias_maximos_analisis=60)
+		cuarenta_y_cinco = {**SPEC, "filters": {
+			"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-10-15 23:59:59"]}}
+		self.assertFalse(api._periodo_es_largo(cuarenta_y_cinco))
+		sesenta_y_uno = {**SPEC, "filters": {
+			"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-10-31 23:59:59"]}}
+		self.assertTrue(api._periodo_es_largo(sesenta_y_uno))
+
+	def test_el_aviso_nombra_los_dias_configurados(self):
+		self.configurar(dias_maximos_analisis=60)
+		self.assertIn("60 días", api._nota_periodo_largo())
+		self.configurar(dias_maximos_analisis=31)
+		self.assertEqual(api._nota_periodo_largo(), api.NOTA_PERIODO_LARGO)
+
+	def test_un_valor_invalido_cae_al_default(self):
+		# La validación impide guardarlo; el respaldo protege un dato corrupto en BD.
+		for valor in (0, None, "x"):
+			with self.subTest(valor=valor), \
+				patch.object(api, "frappe") as fr:
+				fr.get_cached_doc.return_value = frappe._dict(dias_maximos_analisis=valor)
+				self.assertEqual(api._dias_maximos_analisis(), api.DIAS_MAXIMOS_ANALISIS)
+		with patch.object(api, "frappe") as fr:
+			fr.get_cached_doc.return_value = frappe._dict(dias_maximos_analisis=999)
+			self.assertEqual(api._dias_maximos_analisis(), 366)
+
+	def test_dias_fuera_de_rango_no_se_guardan(self):
+		for valor in (0, 367):
+			with self.subTest(valor=valor):
+				doc = frappe.get_doc(SETTINGS)
+				doc.dias_maximos_analisis = valor
+				with self.assertRaises(frappe.ValidationError):
+					doc.save(ignore_permissions=True)
+				frappe.clear_document_cache(SETTINGS, SETTINGS)

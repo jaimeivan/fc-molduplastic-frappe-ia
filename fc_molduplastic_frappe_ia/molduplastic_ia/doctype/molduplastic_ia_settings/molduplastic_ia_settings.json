@@ -39,6 +39,7 @@
     "objetivo_efectividad",
     "column_break_analisis",
     "presupuesto_analisis_seg",
+    "dias_maximos_analisis",
     "min_piezas_porcentaje",
     "umbral_caida_pp",
     "umbral_concentracion_pct",
@@ -254,6 +255,14 @@
       "fieldtype": "Int",
       "label": "Presupuesto de tiempo del análisis (segundos)",
       "description": "Tiempo total para la respuesta analítica, contado desde que llega la pregunta. Si no alcanza, se entrega la respuesta breve con una nota. Máximo 120 (el proxy corta a los 120 s): la respuesta de respaldo necesita ~35 s, que el análisis no usa.",
+      "reqd": 1
+    },
+    {
+      "default": "31",
+      "fieldname": "dias_maximos_analisis",
+      "fieldtype": "Int",
+      "label": "Días máximos para el análisis completo",
+      "description": "Un período de más días responde en breve con un aviso, aunque el modo sea Analítico. Medido el 2026-11-11: los rangos largos consumen el presupuesto y dejan la respuesta sin análisis. 31 = un mes.",
       "reqd": 1
     },
     {

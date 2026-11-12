@@ -6709,8 +6709,9 @@ NOTA_TIEMPO_PREVISTO = (
 	"tiempo disponible. Reduce el período (por ejemplo, a un mes) o acota una dimensión "
 	"y vuelve a preguntar."
 )
-# El análisis completo es para periodos de un mes (2026-11-11): un periodo más
-# largo responde en breve y lo dice.
+# El análisis completo es para periodos de hasta un mes por defecto (2026-11-11);
+# el tope es configurable en Settings porque los rangos largos consumen el
+# presupuesto de tiempo. Un periodo más largo responde en breve y lo dice.
 DIAS_MAXIMOS_ANALISIS = 31
 NOTA_PERIODO_LARGO = (
 	"El análisis completo solo está disponible para periodos de un mes. Este periodo es "
@@ -7055,14 +7056,35 @@ def _analisis_completo(spec, resultado, universo, user, alcance, presupuesto):
 	}
 
 
+def _nota_periodo_largo():
+	"""Aviso de período largo con los días configurados (31 conserva el texto original)."""
+	dias = _dias_maximos_analisis()
+	if dias == DIAS_MAXIMOS_ANALISIS:
+		return NOTA_PERIODO_LARGO
+	return (
+		f"El análisis completo solo está disponible para periodos de hasta {dias} días. "
+		"Este periodo es más largo: se muestra la respuesta breve. Para analizarlo, elige "
+		"un periodo más corto."
+	)
+
+
+def _dias_maximos_analisis():
+	"""Días de período admitidos por el análisis completo (configurable en Settings)."""
+	s = frappe.get_cached_doc("Molduplastic IA Settings")
+	try:
+		return min(max(int(s.dias_maximos_analisis or DIAS_MAXIMOS_ANALISIS), 1), 366)
+	except (TypeError, ValueError):
+		return DIAS_MAXIMOS_ANALISIS
+
+
 def _periodo_es_largo(spec):
-	"""True si el período consultado tiene más de DIAS_MAXIMOS_ANALISIS días."""
+	"""True si el período consultado pasa de los días admitidos por el análisis."""
 	rango = _rango_del_spec(spec)
 	if not rango:
 		return False
 	desde = frappe.utils.getdate(str(rango[0])[:10])
 	hasta = frappe.utils.getdate(str(rango[1])[:10])
-	return (hasta - desde).days + 1 > DIAS_MAXIMOS_ANALISIS
+	return (hasta - desde).days + 1 > _dias_maximos_analisis()
 
 
 def _encabezado_de(argumentos):
@@ -7488,7 +7510,7 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	periodo_largo = modo_pedido == "Analítico" and _periodo_es_largo(spec)
 	if periodo_largo:
 		analisis_omitido = True
-		nota_analisis = NOTA_PERIODO_LARGO
+		nota_analisis = _nota_periodo_largo()
 	if explicacion_en_codigo:
 		_log_llamada(
 			{"modo": "Código", "intencion": intencion}, "explain", "Éxito", consulta_id,

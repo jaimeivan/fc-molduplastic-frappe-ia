@@ -37,6 +37,9 @@ class MolduplasticIASettings(Document):
 			frappe.throw(_("El umbral de concentración debe estar entre 0 y 100."))
 		if not 0 <= int(self.tendencia_periodos or 0) <= 6:
 			frappe.throw(_("Los períodos de tendencia deben estar entre 0 y 6."))
+		dias = int(self.dias_maximos_analisis or 0)
+		if not 1 <= dias <= 366:
+			frappe.throw(_("Los días máximos para el análisis deben estar entre 1 y 366."))
 		presupuesto = int(self.presupuesto_analisis_seg or 0)
 		if not 5 <= presupuesto <= PRESUPUESTO_MAXIMO_SEG:
 			frappe.throw(
