@@ -49,6 +49,7 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			.ia-user { margin-left: auto; background: var(--bg-blue); border-radius: 8px; padding: 8px 12px; width: fit-content; }
 			.ia-bot { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 12px; }
 			.ia-cob { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+			.ia-progreso { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
 			.ia-tbl { width: 100%; font-size: 12px; margin-top: 6px; border-collapse: collapse; }
 			.ia-tbl th, .ia-tbl td { border: 1px solid var(--border-color); padding: 4px 8px; text-align: left; }
 			.ia-actions { margin-top: 6px; display: flex; gap: 8px; }
@@ -66,7 +67,9 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			.ia-loader span:nth-child(3) { animation-delay: 0.3s; }
 			@keyframes ia-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-5px); opacity: 1; } }
 			#ia-sugerencias { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-			.ia-sugeridas-msg { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+			.ia-sugeridas { margin-top: 10px; }
+			.ia-sugeridas-intro { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+			.ia-sugeridas-msg { display: flex; flex-wrap: wrap; gap: 6px; }
 			.ia-chip { cursor: pointer; font-size: 12px; padding: 4px 10px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--card-bg); color: var(--text-color); }
 			.ia-chip:hover { background: var(--bg-light-gray); }
 			#ia-periodo-bar { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
@@ -150,12 +153,16 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 	function textoCobertura(cob) {
 		if (typeof cob === "string") return cob;
 		if (cob && cob.texto) return cob.texto;
-		if (!cob || !cob.universo) return "Sin datos en el alcance de tu aseguradora.";
-		let t = `Universo: ${cob.universo} registros de tu aseguradora.`;
-		for (const [campo, d] of Object.entries(cob.campos || {})) {
-			t += ` ${campo}: ${d.con_datos} con datos (${d.pct}%).`;
-		}
-		return t;
+		// Sin campos con datos incompletos no hay nada que avisar. Antes, una
+		// respuesta de efectividad (que llega con cobertura vacía, {}) pintaba
+		// "Sin datos en el alcance de tu aseguradora." debajo de una tabla con
+		// cifras (conversación pe2dfdlc6a).
+		if (!cob || !cob.universo) return "";
+		const bajos = Object.entries(cob.campos || {}).filter(([, d]) => (d.pct == null ? 100 : d.pct) < 100);
+		if (!bajos.length) return "";
+		return bajos
+			.map(([campo, d]) => `En ${tituloColumna(campo)}, ${d.pct}% de los registros trae el dato.`)
+			.join(" ");
 	}
 
 	// El Desk no renderiza Markdown: las tablas del resumen llegaban como texto con
@@ -222,6 +229,11 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		tipo_carga: "Tipo CDR",
 		tipo: "Submarca",
 		modelo: "Modelo",
+		marca: "Marca",
+		siniestro: "Siniestro",
+		id_estatus: "Estatus",
+		estadolocalidad: "Estado",
+		pais_origen: "País de origen",
 		estado: "Estado",
 		fechaingreso: "Fecha de ingreso",
 		fecha_hora_recoleccion: "Fecha de recolección",
@@ -600,7 +612,12 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		);
 		// Preguntas de seguimiento del análisis: una pregunta normal al servidor.
 		if ((m.sugeridas || []).length) {
-			const $sug = $("<div>").addClass("ia-sugeridas-msg").appendTo(div);
+			const $bloque = $("<div>").addClass("ia-sugeridas").appendTo(div);
+			// La invitación la redacta el modelo; si no vino, los botones salen solos.
+			if (m.texto_sugerencias) {
+				$("<div>").addClass("ia-sugeridas-intro").text(m.texto_sugerencias).appendTo($bloque);
+			}
+			const $sug = $("<div>").addClass("ia-sugeridas-msg").appendTo($bloque);
 			m.sugeridas.forEach((texto) => {
 				$("<button>")
 					.addClass("btn btn-default btn-xs")
@@ -885,11 +902,23 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		mensajes.push({ rol: "usuario" });
 		actualizarSugerencias();
 		addMsg("usuario", q);
+		// Etapa en la que va la pregunta. El servidor la guarda en caché y este
+		// bloque la consulta cada segundo: es informativa, si falla no pasa nada.
+		const progreso = $("<div>").addClass("ia-progreso").text("Analizando la pregunta…");
 		const loader = $("<div>").addClass("ia-msg ia-bot ia-loader")
-			.html("<span></span><span></span><span></span>").appendTo($msgs);
+			.html("<span></span><span></span><span></span>")
+			.append(progreso)
+			.appendTo($msgs);
 		$msgs.scrollTop($msgs[0].scrollHeight);
 		state.cargando = true;
 		page.body.find("#ia-enviar").text("...").prop("disabled", true);
+		const progresoId = "p" + Math.random().toString(36).slice(2, 12);
+		const timer = setInterval(() => {
+			frappe.call(API + ".progreso", { consulta_id: progresoId }).then((r) => {
+				const texto = r.message && r.message.texto;
+				if (texto) progreso.text(texto);
+			});
+		}, 1200);
 		frappe.call(API + ".ask", {
 			pregunta: q,
 			conversacion: state.conv,
@@ -897,7 +926,9 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			periodo: state.periodo_consulta,
 			desde: state.periodo_desde || null,
 			hasta: state.periodo_hasta || null,
+			progreso_id: progresoId,
 		}).then((r) => {
+			clearInterval(timer);
 			loader.remove();
 			state.cargando = false;
 			page.body.find("#ia-enviar").text("Enviar").prop("disabled", false);
@@ -921,6 +952,7 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 				rol: "asistente",
 				contenido: m.mensaje || m.respuesta,
 				sugeridas: m.preguntas_sugeridas || [],
+				texto_sugerencias: m.texto_sugerencias || "",
 			};
 			if (m.columnas) {
 				msg.tabla = { columnas: m.columnas, filas: m.filas };
@@ -933,6 +965,7 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			renderAsistente(msg);
 			cargarHistorial();
 		}).fail((xhr) => {
+			clearInterval(timer);
 			loader.remove();
 			state.cargando = false;
 			page.body.find("#ia-enviar").text("Enviar").prop("disabled", false);

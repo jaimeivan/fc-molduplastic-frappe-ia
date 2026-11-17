@@ -57,23 +57,23 @@ class ConfigFase3(FrappeTestCase):
 
 
 class TestPresupuesto(FrappeTestCase):
-	def test_maximo_y_defecto_son_120(self):
+	def test_maximo_y_defecto_son_240(self):
 		from fc_molduplastic_frappe_ia.molduplastic_ia.doctype.molduplastic_ia_settings import (
 			molduplastic_ia_settings as m,
 		)
-		self.assertEqual(m.PRESUPUESTO_MAXIMO_SEG, 120)
+		self.assertEqual(m.PRESUPUESTO_MAXIMO_SEG, 240)
 
-	def test_sobre_120_no_se_guarda(self):
+	def test_sobre_240_no_se_guarda(self):
 		s = frappe.get_doc(SETTINGS)
-		s.presupuesto_analisis_seg = 121
+		s.presupuesto_analisis_seg = 241
 		with self.assertRaises(frappe.ValidationError):
 			s.save(ignore_permissions=True)
 		frappe.clear_document_cache(SETTINGS, SETTINGS)
 
-	def test_el_presupuesto_se_acota_a_120(self):
+	def test_el_presupuesto_se_acota_a_240(self):
 		with patch.object(api, "frappe") as fr:
 			fr.get_cached_doc.return_value = frappe._dict(presupuesto_analisis_seg=500)
-			self.assertEqual(api._presupuesto_analisis_seg(), 120)
+			self.assertEqual(api._presupuesto_analisis_seg(), 240)
 
 	def test_limite_pasado_es_tiempo_agotado(self):
 		with self.assertRaises(TiempoAgotado):
@@ -130,7 +130,7 @@ class TestAvisoDeTiempo(ConfigFase3):
 		self.assertIn(api.NOTA_SIN_TIEMPO, res["respuesta"])
 
 	@patch.object(api, "generate_spec", return_value=(SPEC, INFO))
-	def test_la_respaldo_recibe_el_limite_de_los_120_segundos(self, _spec):
+	def test_la_respaldo_recibe_el_limite_de_los_240_segundos(self, _spec):
 		with patch.object(api, "_analisis_completo", side_effect=TiempoAgotado("x")), \
 			patch.object(api, "explain", return_value=("Breve.", INFO)) as mock_exp:
 			api.ask("¿cuántas piezas hay?")
@@ -210,9 +210,31 @@ class TestPreguntasSugeridas(ConfigFase3):
 	@patch.object(api, "generate_spec", return_value=(SPEC, INFO))
 	def test_analitico_con_analisis_trae_preguntas_del_playbook(self, _spec):
 		with patch.object(api, "_analisis_completo", return_value=PACK), \
-			patch.object(api, "explain", return_value=("El total es 80.0%.", _info())):
+			patch.object(api, "explain", return_value=("El total es 80.0%.", _info())) as mock_exp:
 			res = api.ask("¿cuántas piezas hay?")
 		self.assertEqual(res["preguntas_sugeridas"], playbooks.preguntas_para("efectividad"))
+		# Las sugeridas viajan al prompt: la invitación la escribe el modelo.
+		self.assertEqual(
+			mock_exp.call_args.kwargs.get("sugerencias"),
+			playbooks.preguntas_para("efectividad"),
+		)
+
+	@patch.object(api, "generate_spec", return_value=(SPEC, INFO))
+	def test_la_invitacion_sale_del_modelo_y_no_del_texto(self, _spec):
+		texto = "El total es 80.0%.\n\nSugerencia: ¿Quieres saber más? Toca alguna."
+		with patch.object(api, "_analisis_completo", return_value=PACK), \
+			patch.object(api, "explain", return_value=(texto, _info())):
+			res = api.ask("¿cuántas piezas hay?")
+		self.assertEqual(res["texto_sugerencias"], "¿Quieres saber más? Toca alguna.")
+		self.assertNotIn("Sugerencia:", res["respuesta"])
+		self.assertIn("El total es 80.0%.", res["respuesta"])
+
+	@patch.object(api, "generate_spec", return_value=(SPEC, INFO))
+	def test_sin_marcador_no_hay_invitacion(self, _spec):
+		with patch.object(api, "_analisis_completo", return_value=PACK), \
+			patch.object(api, "explain", return_value=("El total es 80.0%.", _info())):
+			res = api.ask("¿cuántas piezas hay?")
+		self.assertEqual(res["texto_sugerencias"], "")
 
 	@patch.object(api, "generate_spec", return_value=(SPEC, INFO))
 	def test_breve_no_trae_preguntas(self, _spec):
@@ -220,6 +242,7 @@ class TestPreguntasSugeridas(ConfigFase3):
 		with patch.object(api, "explain", return_value=("Hay 5.", _info())):
 			res = api.ask("¿cuántas piezas hay?")
 		self.assertEqual(res["preguntas_sugeridas"], [])
+		self.assertEqual(res["texto_sugerencias"], "")
 
 	@patch.object(api, "generate_spec", return_value=(SPEC, INFO))
 	def test_con_tiempo_agotado_no_hay_preguntas(self, _spec):
@@ -227,6 +250,7 @@ class TestPreguntasSugeridas(ConfigFase3):
 			patch.object(api, "explain", return_value=("Breve.", INFO)):
 			res = api.ask("¿cuántas piezas hay?")
 		self.assertEqual(res["preguntas_sugeridas"], [])
+		self.assertEqual(res["texto_sugerencias"], "")
 
 	@patch.object(api, "generate_spec", return_value=(SPEC, INFO))
 	def test_desactivadas_por_configuracion(self, _spec):
@@ -235,6 +259,7 @@ class TestPreguntasSugeridas(ConfigFase3):
 			patch.object(api, "explain", return_value=("El total es 80.0%.", _info())):
 			res = api.ask("¿cuántas piezas hay?")
 		self.assertEqual(res["preguntas_sugeridas"], [])
+		self.assertEqual(res["texto_sugerencias"], "")
 
 
 class TestPlaybooks(FrappeTestCase):
@@ -255,8 +280,32 @@ class TestPlaybooks(FrappeTestCase):
 		self.assertEqual(playbooks.preguntas_para("conteo"), [])
 
 
-SPEC_ANIO = {**SPEC, "filters": {"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-12-31 23:59:59"]}}
-SPEC_MES = {**SPEC, "filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]}}
+class TestExtraerInvitacion(FrappeTestCase):
+	def test_quita_la_ultima_linea_con_marcador(self):
+		texto = "Resumen.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nSugerencia: ¿Quieres saber más?"
+		resto, invitacion = api._extraer_invitacion(texto)
+		self.assertEqual(invitacion, "¿Quieres saber más?")
+		self.assertNotIn("Sugerencia:", resto)
+		self.assertIn("| 1 | 2 |", resto)
+
+	def test_tolera_negritas_y_comillas(self):
+		resto, invitacion = api._extraer_invitacion(
+			'Texto.\n\n**Sugerencia:** "¿Te gustaría seguir?"'
+		)
+		self.assertEqual(invitacion, "¿Te gustaría seguir?")
+		self.assertEqual(resto, "Texto.")
+
+	def test_sin_marcador_no_hay_invitacion(self):
+		texto = "Solo la respuesta."
+		self.assertEqual(api._extraer_invitacion(texto), (texto, ""))
+
+	def test_una_sugerencia_del_analisis_no_se_confunde(self):
+		texto = "Texto.\n\nSugerencias: revisa el taller."
+		self.assertEqual(api._extraer_invitacion(texto), (texto, ""))
+
+
+SPEC_ANIO = {**SPEC, "filters": {"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-12-31 23:59:59"]}}
+SPEC_MES = {**SPEC, "filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]}}
 
 
 class TestPeriodoLargo(ConfigFase3):
@@ -265,8 +314,8 @@ class TestPeriodoLargo(ConfigFase3):
 		self.assertTrue(api._periodo_es_largo(SPEC_ANIO))
 
 	def test_treinta_y_uno_dias_no_es_largo_treinta_y_dos_si(self):
-		treinta_y_uno = {**SPEC, "filters": {"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-01-31 23:59:59"]}}
-		treinta_y_dos = {**SPEC, "filters": {"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-02-01 23:59:59"]}}
+		treinta_y_uno = {**SPEC, "filters": {"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-01-31 23:59:59"]}}
+		treinta_y_dos = {**SPEC, "filters": {"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-02-01 23:59:59"]}}
 		self.assertFalse(api._periodo_es_largo(treinta_y_uno))
 		self.assertTrue(api._periodo_es_largo(treinta_y_dos))
 
@@ -314,10 +363,10 @@ class TestPeriodoLargo(ConfigFase3):
 	def test_con_60_dias_un_rango_de_45_si_se_analiza(self):
 		self.configurar(dias_maximos_analisis=60)
 		cuarenta_y_cinco = {**SPEC, "filters": {
-			"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-10-15 23:59:59"]}}
+			"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-10-15 23:59:59"]}}
 		self.assertFalse(api._periodo_es_largo(cuarenta_y_cinco))
 		sesenta_y_uno = {**SPEC, "filters": {
-			"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-10-31 23:59:59"]}}
+			"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-10-31 23:59:59"]}}
 		self.assertTrue(api._periodo_es_largo(sesenta_y_uno))
 
 	def test_el_aviso_nombra_los_dias_configurados(self):

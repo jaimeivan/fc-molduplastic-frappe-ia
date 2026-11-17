@@ -8,6 +8,7 @@ import re
 
 import frappe
 
+from fc_molduplastic_frappe_ia.molduplastic_ia.campos import normalizar_ingreso
 from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import estado_canonico, region_de
 from fc_molduplastic_frappe_ia.molduplastic_ia.whitelist import (
 	FIELDTYPES_NUMERICOS,
@@ -40,6 +41,10 @@ def _get_settings():
 
 def validar_spec(spec):
 	"""Valida y normaliza el spec. Retorna el spec normalizado o lanza SpecInvalida."""
+	# El campo de período de Pieza cambió a `fecha_hora_carga` (2026-11-17). Los
+	# specs guardados y los que devuelve el modelo con el campo viejo se
+	# reescriben aquí, antes de validar, para que ninguna consulta muera.
+	spec = normalizar_ingreso(spec)
 	if not isinstance(spec, dict):
 		raise SpecInvalida("El spec debe ser un objeto JSON.")
 	if spec.get("out_of_scope"):
@@ -203,7 +208,7 @@ def _normalizar_agg(agg, campos_ok, info):
 def _clave_referencia(v):
 	"""La clave de una referencia a otro campo, o None si no lo es.
 
-	La forma canónica es {"campo": "fechaingreso"}, pero el modelo devuelve de
+	La forma canónica es {"campo": "fecha_hora_carga"}, pero el modelo devuelve de
 	vez en cuando la clave corrompida ("campo公司", "campo:", "campo}"): hay una
 	sola clave, empieza por "campo" y su valor es el nombre del campo, así que la
 	intención es inequívoca. El valor se valida contra la whitelist igual que en
@@ -222,7 +227,7 @@ def _clave_referencia(v):
 
 
 def _es_referencia(v):
-	"""True si es una referencia a otro campo: {"campo": "fechaingreso"}."""
+	"""True si es una referencia a otro campo: {"campo": "fecha_hora_carga"}."""
 	return _clave_referencia(v) is not None
 
 
@@ -239,7 +244,7 @@ def _validar_condicion(campo, cond, campos_ok):
 
 	Una condición es un valor escalar o [op, ...]. Varias condiciones sobre el
 	mismo campo se escriben como lista de condiciones (se unen con AND):
-	[["between", desde, hasta], [">", {"campo": "fechaingreso"}]].
+	[["between", desde, hasta], [">", {"campo": "fecha_hora_carga"}]].
 	"""
 	if isinstance(cond, (str, int, float, bool)) or cond is None:
 		return _canonizar_estado(campo, cond)

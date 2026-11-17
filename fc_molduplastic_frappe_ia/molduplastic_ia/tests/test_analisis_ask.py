@@ -5,6 +5,7 @@ real. El LLM está simulado con mocks: estas pruebas no contestan con el modelo.
 """
 
 import datetime
+import json
 from unittest.mock import patch
 
 import frappe
@@ -24,7 +25,7 @@ INFO = {"proveedor": "DeepSeek", "modelo": "deepseek-chat", "prompt": "p", "resp
 SPEC_EFECTIVIDAD = {
 	"doctype": "Pieza",
 	"fields": [],
-	"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+	"filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
 	"aggregations": [],
 	"group_by": ["taller_asignado"],
 	"order_by": [{"field": "recolectadas", "dir": "desc"}],
@@ -91,7 +92,8 @@ class TestAnalisisDeEfectividad(ConfigAnalisis):
 		# Mismo total que el SQL directo del alcance GNP (aseguradora = '6').
 		directo = frappe.db.sql(
 			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora='6' AND recolectable=1 "
-			"AND fechaingreso BETWEEN '2026-09-01 00:00:00' AND '2026-09-30 23:59:59'"
+			"AND rutas_validas='1' "
+			"AND fecha_hora_carga BETWEEN '2026-09-01 00:00:00' AND '2026-09-30 23:59:59'"
 		)[0][0]
 		self.assertEqual(analisis["total"]["ingresadas"], directo)
 		self.assertIn("periodo_anterior", analisis["comparativos"])
@@ -99,6 +101,42 @@ class TestAnalisisDeEfectividad(ConfigAnalisis):
 		# Agrupada por taller: actual, grupos, período anterior y año anterior.
 		self.assertEqual(analisis["consultas"], 4)
 		self.assertEqual(analisis["objetivo"]["valor"], 75)
+
+	def test_cada_consulta_derivada_deja_una_fila_complementary(self):
+		antes = set(frappe.get_all("IA API Log", pluck="name"))
+		with patch.object(api, "generate_spec", return_value=(_spec_efectividad(), INFO)), \
+			patch.object(api, "explain", return_value=("Respuesta.", INFO)):
+			api.ask("efectividad de septiembre por taller")
+		nuevos = set(frappe.get_all("IA API Log", pluck="name")) - antes
+		filas = frappe.get_all(
+			"IA API Log",
+			filters={"name": ["in", list(nuevos)], "operacion": "complementary"},
+			fields=[
+				"consulta_id", "estado", "motivo_consulta", "consulta_spec",
+				"latencia_bd_ms", "latencia_ms", "tokens_entrada", "tokens_salida",
+			],
+		)
+		self.assertEqual(len(filas), 4)
+		self.assertTrue(all(f.estado == "Éxito" for f in filas))
+		self.assertTrue(all(f.motivo_consulta for f in filas))
+		self.assertTrue(all(f.consulta_spec for f in filas))
+		for f in filas:
+			json.loads(f.consulta_spec)
+		self.assertIn(
+			"efectividad del período anterior", {f.motivo_consulta for f in filas}
+		)
+		ids = {f.consulta_id for f in filas}
+		self.assertEqual(len(ids), 1)
+		explain = frappe.get_all(
+			"IA API Log",
+			filters={"name": ["in", list(nuevos)], "operacion": "explain"},
+			fields=["consulta_id", "consultas_complementarias"],
+		)
+		self.assertEqual({e.consulta_id for e in explain}, ids)
+		self.assertEqual(explain[0].consultas_complementarias, 4)
+		# Las filas complementarias no son llamadas al modelo.
+		self.assertTrue(all((f.tokens_entrada or 0) == 0 for f in filas))
+		self.assertTrue(all((f.latencia_ms or 0) == 0 for f in filas))
 
 	def test_consultas_derivadas_pasan_por_validar_spec_y_el_mismo_alcance(self):
 		with patch.object(api, "generate_spec", return_value=(_spec_efectividad(), INFO)), \
@@ -182,7 +220,7 @@ class TestMedicionConFakes(ConfigAnalisis):
 	"""Lógica de comparativos sin base: cifras controladas, sin consultas."""
 
 	def _medidas(self, actual, anterior):
-		def medir(filtros, rango, user, alcance, deadline, consultas):
+		def medir(filtros, rango, user, alcance, deadline, consultas, **_kwargs):
 			consultas.append(rango)
 			return actual if rango[0].startswith("2026-09") else anterior
 		return medir
@@ -192,7 +230,7 @@ class TestMedicionConFakes(ConfigAnalisis):
 		anterior = {"ingresadas": 100, "recolectadas": 60, "pct": 60.0}
 		llamadas = []
 
-		def medir(filtros, rango, user, alcance, deadline, consultas):
+		def medir(filtros, rango, user, alcance, deadline, consultas, **_kwargs):
 			llamadas.append(rango[0])
 			return actual if rango[0].startswith("2026-09") else anterior
 
@@ -271,7 +309,7 @@ class TestValidacionDeNuevosCampos(ConfigAnalisis):
 		self.assertEqual(desde[:10], "2023-02-28")
 
 	def test_filtros_sin_fecha_quita_fechas_y_recolectable(self):
-		spec = {"filters": {"fechaingreso": ["between", "a", "b"], "recolectable": ["=", 1],
+		spec = {"filters": {"fecha_hora_carga": ["between", "a", "b"], "recolectable": ["=", 1],
 			"taller_asignado": ["=", "CELLINI"]}}
 		self.assertEqual(api._filtros_sin_fecha(spec), {"taller_asignado": ["=", "CELLINI"]})
 
@@ -298,13 +336,14 @@ class TestValidarSpecDerivado(FrappeTestCase):
 		spec = validar_spec({
 			"doctype": "Pieza", "fields": [], "filters": {},
 			"aggregations": [{"func": "count", "field": "*", "alias": "x",
-				"filtros": {"aseguradora": ["=", "7"], "fechaingreso": rango, "recolectable": ["=", 1]}}],
+				"filtros": {"aseguradora": ["=", "7"], "fecha_hora_carga": rango, "recolectable": ["=", 1]}}],
 			"group_by": [], "order_by": [], "limit": 1,
 			"render_chart": None, "out_of_scope": False,
 		})
 		res = ejecutar(spec, USUARIO_GNP)
 		gnp = frappe.db.sql(
 			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora='6' AND recolectable=1 "
-			"AND fechaingreso BETWEEN '2026-09-01 00:00:00' AND '2026-09-30 23:59:59'"
+			"AND rutas_validas='1' "
+			"AND fecha_hora_carga BETWEEN '2026-09-01 00:00:00' AND '2026-09-30 23:59:59'"
 		)[0][0]
 		self.assertEqual(res["filas"][0][0] or 0, gnp)

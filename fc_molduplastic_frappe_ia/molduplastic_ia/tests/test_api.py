@@ -130,7 +130,12 @@ class TestAsk(FrappeTestCase):
 		frappe.set_user("Administrator")
 		res = api.ask("dame piezas", universo="TODAS")
 		self.assertTrue(res["ok"])
-		self.assertEqual(res["cobertura"]["universo"], frappe.db.count("Pieza"))
+		# TODAS ya no es "toda la tabla": el universo son las piezas
+		# recolectables con una ruta válida, igual que VW_PIEZAS.
+		universo = frappe.db.sql(
+			"SELECT COUNT(*) FROM tabPieza WHERE recolectable = 1 AND rutas_validas = '1'"
+		)[0][0]
+		self.assertEqual(res["cobertura"]["universo"], universo)
 
 	@patch.object(api, "explain", return_value=("Listo.", INFO))
 	@patch.object(api, "generate_spec", return_value=(SPEC_OK, INFO))
@@ -138,6 +143,70 @@ class TestAsk(FrappeTestCase):
 		res = api.ask("dame piezas", universo="7")
 		self.assertTrue(res["ok"])
 		self.assertEqual(res["universo"], "6")
+
+
+class TestMetricasDeEtapas(FrappeTestCase):
+	"""El log desglosa LLM, construcción del query y BD en la fila explain."""
+
+	def setUp(self):
+		frappe.set_user(USUARIO_GNP)
+		self.addCleanup(frappe.set_user, "Administrator")
+
+	def _filas_nuevas(self, antes, operacion=None):
+		nuevos = set(frappe.get_all("IA API Log", pluck="name")) - antes
+		filtros = {"name": ["in", list(nuevos)]}
+		if operacion:
+			filtros["operacion"] = operacion
+		return frappe.get_all(
+			"IA API Log",
+			filters=filtros,
+			fields=[
+				"name", "operacion", "latencia_ms", "latencia_construccion_ms",
+				"latencia_bd_ms", "latencia_total_ms",
+			],
+		)
+
+	@patch.object(api, "explain", return_value=("Hay 5 piezas.", INFO))
+	@patch.object(api, "generate_spec", return_value=(SPEC_OK, INFO))
+	def test_desglosa_llm_construccion_bd_y_total(self, mock_spec, mock_exp):
+		antes = set(frappe.get_all("IA API Log", pluck="name"))
+		api.ask("¿cuántas piezas hay?")
+		explain = self._filas_nuevas(antes, "explain")
+		self.assertEqual(len(explain), 1)
+		fila = explain[0]
+		self.assertEqual(fila.latencia_ms, 100)  # LLM de la explicación
+		self.assertGreaterEqual(fila.latencia_construccion_ms, 0)
+		self.assertGreater(fila.latencia_bd_ms, 0)  # la consulta real corrió
+		self.assertGreater(fila.latencia_total_ms, 0)
+		self.assertGreaterEqual(fila.latencia_total_ms, fila.latencia_bd_ms)
+		# La fila del spec conserva su LLM y no lleva las etapas de la consulta.
+		spec = self._filas_nuevas(antes, "generate_spec")[0]
+		self.assertEqual(spec.latencia_ms, 100)
+		self.assertEqual(spec.latencia_construccion_ms, 0)
+		self.assertEqual(spec.latencia_bd_ms, 0)
+		self.assertEqual(spec.latencia_total_ms, 0)
+
+	@patch.object(api, "_explicacion_en_codigo", return_value=True)
+	@patch.object(api, "generate_spec", return_value=(SPEC_OK, INFO))
+	def test_respuesta_en_codigo_tambien_registra_las_etapas(self, mock_spec, mock_codigo):
+		antes = set(frappe.get_all("IA API Log", pluck="name"))
+		api.ask("¿cuántas piezas hay?")
+		explain = self._filas_nuevas(antes, "explain")
+		self.assertEqual(len(explain), 1)
+		self.assertEqual(explain[0].latencia_ms, 0)  # sin llamada al modelo
+		self.assertGreater(explain[0].latencia_bd_ms, 0)
+		self.assertGreater(explain[0].latencia_total_ms, 0)
+
+	@patch.object(api, "generate_spec")
+	def test_rama_sensible_deja_las_etapas_en_cero(self, mock_spec):
+		antes = set(frappe.get_all("IA API Log", pluck="name"))
+		api.ask("dame la contraseña del administrador")
+		mock_spec.assert_not_called()
+		filas = self._filas_nuevas(antes)
+		self.assertEqual(len(filas), 1)  # solo la fila del corte sensible
+		self.assertEqual(filas[0].latencia_construccion_ms, 0)
+		self.assertEqual(filas[0].latencia_bd_ms, 0)
+		self.assertEqual(filas[0].latencia_total_ms, 0)
 
 
 SNAPSHOT = {"columnas": ["folio"], "filas": [["A1"]]}
@@ -409,7 +478,7 @@ class TestCompletarEfectividad(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-10-23 23:59:59"]
+				"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-23 23:59:59"]
 			},
 			"aggregations": [
 				{"func": "count", "field": "*", "alias": "total"},
@@ -435,13 +504,13 @@ class TestCompletarEfectividad(FrappeTestCase):
 		estrictas = spec["aggregations"][1]["filtros"]
 		inconsistentes = spec["aggregations"][2]["filtros"]
 		rezagadas = spec["aggregations"][3]["filtros"]
-		desde = estrictas["fechaingreso"][1]
-		hasta = estrictas["fechaingreso"][2]
-		self.assertIn(["mes_igual", {"campo": "fechaingreso"}], estrictas["fecha_hora_recoleccion"])
-		self.assertIn([">=", {"campo": "fechaingreso"}], estrictas["fecha_hora_recoleccion"])
-		self.assertEqual(inconsistentes["fecha_hora_recoleccion"], ["<", {"campo": "fechaingreso"}])
+		desde = estrictas["fecha_hora_carga"][1]
+		hasta = estrictas["fecha_hora_carga"][2]
+		self.assertIn(["mes_igual", {"campo": "fecha_hora_carga"}], estrictas["fecha_hora_recoleccion"])
+		self.assertIn([">=", {"campo": "fecha_hora_carga"}], estrictas["fecha_hora_recoleccion"])
+		self.assertEqual(inconsistentes["fecha_hora_recoleccion"], ["<", {"campo": "fecha_hora_carga"}])
 		self.assertEqual(rezagadas["fecha_hora_recoleccion"], ["between", desde, hasta])
-		self.assertEqual(rezagadas["fechaingreso"], ["<", desde])
+		self.assertEqual(rezagadas["fecha_hora_carga"], ["<", desde])
 		self.assertEqual(estrictas["recolectable"], ["=", 1])
 		self.assertEqual(spec["group_by"], ["parte_pieza"])
 		self.assertEqual(spec["limit"], 1)
@@ -450,7 +519,7 @@ class TestCompletarEfectividad(FrappeTestCase):
 		spec = {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-10-01 00:00:00", "2026-10-23 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-10-01 00:00:00", "2026-10-23 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 			"group_by": [],
 			"limit": 5,
@@ -468,7 +537,7 @@ class TestCompletarEfectividad(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-10-23 23:59:59"]
+				"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-23 23:59:59"]
 			},
 			"aggregations": [
 				{"func": "count", "field": "*", "alias": "total"},
@@ -487,7 +556,7 @@ class TestCompletarEfectividad(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-10-23 23:59:59"]
+				"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-23 23:59:59"]
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 			"group_by": ["taller_asignado"],
@@ -501,7 +570,7 @@ class TestCompletarEfectividad(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-10-24 23:59:59"]
+				"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-24 23:59:59"]
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 			"group_by": [],
@@ -519,7 +588,7 @@ class TestCompletarEfectividad(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-10-24 23:59:59"]
+				"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-24 23:59:59"]
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 			"group_by": [],
@@ -537,7 +606,7 @@ class TestCompletarEfectividad(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-10-24 23:59:59"]
+				"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-24 23:59:59"]
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 			"group_by": [],
@@ -553,7 +622,7 @@ class TestCompletarEfectividad(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-10-24 23:59:59"]
+				"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-24 23:59:59"]
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 			"group_by": ["taller_asignado"],
@@ -582,7 +651,7 @@ class TestCompletarEfectividad(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-10-23 23:59:59"]
+				"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-23 23:59:59"]
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 			"group_by": ["taller_asignado"],
@@ -601,7 +670,7 @@ class TestCompletarListado(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-10-01 00:00:00", "2026-10-24 23:59:59"]
+				"fecha_hora_carga": ["between", "2026-10-01 00:00:00", "2026-10-24 23:59:59"]
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 			"group_by": list(group_by or []),
@@ -763,7 +832,7 @@ class TestRegionDeLaPregunta(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-10-24 23:59:59"]
+				"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-24 23:59:59"]
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 			"group_by": ["id_plaza"],
@@ -814,7 +883,7 @@ class TestNoRecuperadas(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]
+				"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "x"}],
 			"group_by": ["taller_asignado"],
@@ -827,10 +896,10 @@ class TestNoRecuperadas(FrappeTestCase):
 			["no_recolectadas", "inconsistentes_no_recolectadas", "rezagadas_no_recolectadas"],
 		)
 		self.assertEqual(
-			out["aggregations"][0]["filtros"]["fechaingreso"],
+			out["aggregations"][0]["filtros"]["fecha_hora_carga"],
 			["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"],
 		)
-		self.assertIn(["<", "2026-09-01 00:00:00"], [out["aggregations"][2]["filtros"]["fechaingreso"]])
+		self.assertIn(["<", "2026-09-01 00:00:00"], [out["aggregations"][2]["filtros"]["fecha_hora_carga"]])
 		self.assertEqual(out["group_by"], ["taller_asignado"])
 
 	def test_tabla_suma_las_tres(self):
@@ -872,7 +941,7 @@ class TestMesActualPorDefecto(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", desde, hasta],
+				"fecha_hora_carga": ["between", desde, hasta],
 				"recolectable": ["=", 1],
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
@@ -883,7 +952,7 @@ class TestMesActualPorDefecto(FrappeTestCase):
 		out = api._completar_efectividad(
 			self._spec(), "muestra la efectividad por plaza de la region cdmx"
 		)
-		desde, hasta = out["aggregations"][0]["filtros"]["fechaingreso"][1:]
+		desde, hasta = out["aggregations"][0]["filtros"]["fecha_hora_carga"][1:]
 		self.assertEqual(desde[:7], frappe.utils.now_datetime().strftime("%Y-%m"))
 		self.assertEqual(desde[8:10], "01")
 		self.assertEqual(hasta[:7], frappe.utils.now_datetime().strftime("%Y-%m"))
@@ -894,7 +963,7 @@ class TestMesActualPorDefecto(FrappeTestCase):
 			"¿cuál es la efectividad por plaza en octubre?",
 		)
 		self.assertEqual(
-			out["aggregations"][0]["filtros"]["fechaingreso"][1], "2026-10-01 00:00:00"
+			out["aggregations"][0]["filtros"]["fecha_hora_carga"][1], "2026-10-01 00:00:00"
 		)
 
 	def test_top_sin_periodo_usa_el_mes_actual(self):
@@ -902,7 +971,7 @@ class TestMesActualPorDefecto(FrappeTestCase):
 			self._spec(), "¿Qué plaza tiene la efectividad más baja en la región Norte?"
 		)
 		self.assertEqual(
-			out["aggregations"][0]["filtros"]["fechaingreso"][1][:7],
+			out["aggregations"][0]["filtros"]["fecha_hora_carga"][1][:7],
 			frappe.utils.now_datetime().strftime("%Y-%m"),
 		)
 
@@ -912,7 +981,7 @@ class TestMesActualPorDefecto(FrappeTestCase):
 			"¿Las agencias recolectan mejor que los talleres?",
 		)
 		self.assertEqual(
-			out["aggregations"][0]["filtros"]["fechaingreso"][1][:7],
+			out["aggregations"][0]["filtros"]["fecha_hora_carga"][1][:7],
 			frappe.utils.now_datetime().strftime("%Y-%m"),
 		)
 
@@ -922,7 +991,7 @@ class TestMesActualPorDefecto(FrappeTestCase):
 			spec, "efectividad por plaza de toda la base histórica"
 		)
 		self.assertEqual(
-			out["aggregations"][0]["filtros"]["fechaingreso"][1], "2020-01-01 00:00:00"
+			out["aggregations"][0]["filtros"]["fecha_hora_carga"][1], "2020-01-01 00:00:00"
 		)
 
 	def test_peor_efectividad_es_un_top(self):
@@ -1309,7 +1378,7 @@ class TestRedaccionesDeEfectividad(FrappeTestCase):
 			return {
 				"doctype": "Pieza",
 				"fields": [],
-				"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+				"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 				"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 			}
 
@@ -1328,7 +1397,7 @@ class TestConteoDeRecolectadas(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-09-01", "2026-09-30"],
+				"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"],
 				"taller_asignado": "CELLINI",
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "recolectadas"}],
@@ -1395,14 +1464,14 @@ class TestResumenDosMeses(FrappeTestCase):
 		spec = {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-10-01 00:00:00", "2026-10-31 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-10-01 00:00:00", "2026-10-31 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 		}
 		out = api._completar_resumen(
 			spec, "muestra el resumen de piezas entre el mes anterior y el mes actual"
 		)
 		desde, hasta = api._periodo_dos_meses()
-		ingresadas = out["aggregations"][0]["filtros"]["fechaingreso"]
+		ingresadas = out["aggregations"][0]["filtros"]["fecha_hora_carga"]
 		self.assertEqual(ingresadas, ["between", desde, hasta])
 
 	def test_la_etiqueta_del_rango_se_manda_al_modelo(self):
@@ -1438,7 +1507,7 @@ class TestRangoDeFechasEnElChat(FrappeTestCase):
 
 	def test_el_mensaje_sale_del_rango_del_spec(self):
 		spec = {
-			"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-15 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-15 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 		self.assertEqual(
@@ -1449,7 +1518,7 @@ class TestRangoDeFechasEnElChat(FrappeTestCase):
 	def test_sin_periodo_en_la_pregunta_sale_el_periodo_del_spec(self):
 		"""El encabezado lleva siempre el período: sin frase, el del spec (mes en curso)."""
 		spec = {
-			"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 		self.assertEqual(
@@ -1460,7 +1529,7 @@ class TestRangoDeFechasEnElChat(FrappeTestCase):
 
 	def test_un_mes_tambien_lleva_el_mensaje(self):
 		spec = {
-			"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 		self.assertEqual(
@@ -1474,7 +1543,7 @@ class TestRangoDeFechasEnElChat(FrappeTestCase):
 
 	def test_un_anio_tambien_lleva_el_mensaje(self):
 		spec = {
-			"filters": {"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-12-31 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-12-31 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 		self.assertEqual(
@@ -1484,7 +1553,7 @@ class TestRangoDeFechasEnElChat(FrappeTestCase):
 
 	def test_la_hora_sale_cuando_el_limite_no_es_de_dia_completo(self):
 		spec = {
-			"filters": {"fechaingreso": ["between", "2026-09-01 08:00:00", "2026-09-01 18:30:00"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01 08:00:00", "2026-09-01 18:30:00"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 		self.assertEqual(
@@ -1500,7 +1569,7 @@ class TestMotivosConEstatus(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -1528,7 +1597,7 @@ class TestNoLocalizadas(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 		}
 
@@ -1549,7 +1618,7 @@ class TestNoLocalizadas(FrappeTestCase):
 			{"id_estatus": ["=", 206], "recolectable": ["=", 1]},
 		)
 		self.assertEqual(
-			out["filters"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30"]
+			out["filters"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30"]
 		)
 
 	def test_sin_dimension_cuenta_el_total(self):
@@ -1622,7 +1691,7 @@ class TestSiniestrosPendientes(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 		}
 
@@ -1638,7 +1707,7 @@ class TestSiniestrosPendientes(FrappeTestCase):
 		)
 		self.assertEqual(out["group_by"], ["siniestro"])
 		desde, hasta = api._periodo_mes_actual()
-		self.assertEqual(out["filters"], {"fechaingreso": ["between", desde, hasta]})
+		self.assertEqual(out["filters"], {"fecha_hora_carga": ["between", desde, hasta]})
 		self.assertEqual(out["aggregations"][0]["alias"], "pendientes")
 		self.assertEqual(
 			out["aggregations"][0]["filtros"],
@@ -1656,7 +1725,7 @@ class TestSiniestrosPendientes(FrappeTestCase):
 			self._spec(), "¿Qué siniestros tienen piezas pendientes en septiembre?"
 		)
 		self.assertEqual(
-			out["filters"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30"]
+			out["filters"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30"]
 		)
 
 	def test_titulo(self):
@@ -1680,7 +1749,7 @@ class TestSiniestrosPorCDR(FrappeTestCase):
 			[{"func": "count_distinct", "field": "siniestro", "alias": "siniestros"}],
 		)
 		desde, hasta = api._periodo_mes_actual()
-		self.assertEqual(spec["filters"], {"fechaingreso": ["between", desde, hasta]})
+		self.assertEqual(spec["filters"], {"fecha_hora_carga": ["between", desde, hasta]})
 		self.assertEqual(spec["order_by"], [{"field": "siniestros", "dir": "desc"}])
 
 	def test_no_interpreta_una_pregunta_ajena_como_conteo_por_cdr(self):
@@ -1850,25 +1919,25 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 			self.assertIsNone(api._rango_de_periodo("personalizado", desde, hasta), (desde, hasta))
 
 	def test_personalizado_reemplaza_el_rango_del_spec(self):
-		spec = self._spec({"fechaingreso": ["between", "2026-11-01 00:00:00", "2026-11-02 23:59:59"]})
+		spec = self._spec({"fecha_hora_carga": ["between", "2026-11-01 00:00:00", "2026-11-02 23:59:59"]})
 		out = api._aplicar_periodo(
 			spec, "personalizado", "¿cuántas piezas hay?", "2026-09-11", "2026-09-20"
 		)
 		self.assertEqual(
-			out["filters"]["fechaingreso"],
+			out["filters"]["fecha_hora_carga"],
 			["between", "2026-09-11 00:00:00", "2026-09-20 23:59:59"],
 		)
 
 	def test_reemplaza_el_rango_global_y_conserva_los_demas_filtros(self):
 		spec = self._spec(
 			{
-				"fechaingreso": ["between", "2026-11-01 00:00:00", "2026-11-02 23:59:59"],
+				"fecha_hora_carga": ["between", "2026-11-01 00:00:00", "2026-11-02 23:59:59"],
 				"marca": ["=", "HINO"],
 			}
 		)
 		out = api._aplicar_periodo(spec, "semana_pasada", "¿cuántas piezas hay?")
 		self.assertEqual(
-			out["filters"]["fechaingreso"],
+			out["filters"]["fecha_hora_carga"],
 			["between", "2026-10-26 00:00:00", "2026-11-01 23:59:59"],
 		)
 		self.assertEqual(out["filters"]["marca"], ["=", "HINO"])
@@ -1886,7 +1955,7 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 							"2026-11-01 00:00:00",
 							"2026-11-02 23:59:59",
 						],
-						"fechaingreso": ["<", "2026-11-01 00:00:00"],
+						"fecha_hora_carga": ["<", "2026-11-01 00:00:00"],
 					},
 				}
 			]
@@ -1897,7 +1966,7 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 			filtros["fecha_hora_recoleccion"],
 			["between", "2026-10-04 00:00:00", "2026-11-02 23:59:59"],
 		)
-		self.assertEqual(filtros["fechaingreso"], ["<", "2026-10-04 00:00:00"])
+		self.assertEqual(filtros["fecha_hora_carga"], ["<", "2026-10-04 00:00:00"])
 
 	def test_sin_fechas_inyecta_la_fecha_de_ingreso(self):
 		out = api._aplicar_periodo(
@@ -1906,7 +1975,7 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 			"¿cuántas piezas hay?",
 		)
 		self.assertEqual(
-			out["filters"]["fechaingreso"], ["between", "2026-01-01 00:00:00", "2026-11-02 23:59:59"]
+			out["filters"]["fecha_hora_carga"], ["between", "2026-01-01 00:00:00", "2026-11-02 23:59:59"]
 		)
 
 	def test_un_listado_sin_fechas_no_se_acota(self):
@@ -1931,9 +2000,9 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 		self.assertEqual(out["filters"], {})
 
 	def test_la_pregunta_con_periodo_manda(self):
-		spec = self._spec({"fechaingreso": ["between", "2026-09-01", "2026-09-30"]})
+		spec = self._spec({"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]})
 		out = api._aplicar_periodo(spec, "este_anio", "piezas de septiembre")
-		self.assertEqual(out["filters"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30"])
+		self.assertEqual(out["filters"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30"])
 
 	def test_anio_en_curso_se_reconoce_en_varias_redacciones(self):
 		for pregunta in (
@@ -1986,11 +2055,11 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 	def test_respuesta_directa_y_fuera_de_alcance_no_se_tocan(self):
 		directa = {"respuesta_directa": "REGIONES", "filters": {}}
 		self.assertNotIn(
-			"fechaingreso", api._aplicar_periodo(directa, "este_anio", "dame las regiones")["filters"]
+			"fecha_hora_carga", api._aplicar_periodo(directa, "este_anio", "dame las regiones")["filters"]
 		)
 		fuera = {"out_of_scope": True, "filters": {}}
 		self.assertNotIn(
-			"fechaingreso", api._aplicar_periodo(fuera, "este_anio", "recomiéndame un restaurante")["filters"]
+			"fecha_hora_carga", api._aplicar_periodo(fuera, "este_anio", "recomiéndame un restaurante")["filters"]
 		)
 
 	@patch.object(api, "explain", return_value=("Hay 5 piezas.", INFO))
@@ -2000,7 +2069,7 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 		self.addCleanup(frappe.set_user, "Administrator")
 		mock_spec.return_value = (
 			self._spec(
-				{"fechaingreso": ["between", "2026-11-01 00:00:00", "2026-11-02 23:59:59"]},
+				{"fecha_hora_carga": ["between", "2026-11-01 00:00:00", "2026-11-02 23:59:59"]},
 				[{"func": "count", "field": "*", "alias": "total", "filtros": {}}],
 			),
 			INFO,
@@ -2009,14 +2078,14 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 		self.assertTrue(res["ok"])
 		self.assertEqual(res["periodo"], "ultimos_30")
 		self.assertEqual(
-			res["spec"]["filters"]["fechaingreso"],
+			res["spec"]["filters"]["fecha_hora_carga"],
 			["between", "2026-10-04 00:00:00", "2026-11-02 23:59:59"],
 		)
 		# Una clave desconocida cae al default (mes en curso), nunca al SQL.
 		res = api.ask("¿cuántas piezas hay?", periodo="'; DROP TABLE tabPieza; --")
 		self.assertEqual(res["periodo"], "este_mes")
 		self.assertEqual(
-			res["spec"]["filters"]["fechaingreso"],
+			res["spec"]["filters"]["fecha_hora_carga"],
 			["between", "2026-11-01 00:00:00", "2026-11-02 23:59:59"],
 		)
 
@@ -2034,7 +2103,7 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 		)
 		self.assertEqual(res["periodo"], "personalizado")
 		self.assertEqual(
-			res["spec"]["filters"]["fechaingreso"],
+			res["spec"]["filters"]["fecha_hora_carga"],
 			["between", "2026-09-11 00:00:00", "2026-09-20 23:59:59"],
 		)
 		self.assertFalse(res["periodo_del_texto"])
@@ -2052,7 +2121,7 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 		res = api.ask("¿cuántas piezas hay?", periodo="personalizado")
 		self.assertEqual(res["periodo"], "este_mes")
 		self.assertEqual(
-			res["spec"]["filters"]["fechaingreso"],
+			res["spec"]["filters"]["fecha_hora_carga"],
 			["between", "2026-11-01 00:00:00", "2026-11-02 23:59:59"],
 		)
 
@@ -2063,7 +2132,7 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 		self.addCleanup(frappe.set_user, "Administrator")
 		mock_spec.return_value = (
 			self._spec(
-				{"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+				{"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 				[{"func": "count", "field": "*", "alias": "total", "filtros": {}}],
 			),
 			INFO,
@@ -2073,7 +2142,7 @@ class TestPeriodoSeleccionado(FrappeTestCase):
 		self.assertEqual(res["rango"], {"desde": "2026-09-01", "hasta": "2026-09-30"})
 		# El texto manda: el selector no pisa el spec; el chat ajusta el selector.
 		self.assertEqual(
-			res["spec"]["filters"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30"]
+			res["spec"]["filters"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30"]
 		)
 
 	@patch.object(api, "explain", return_value=("Hay 4 recolecciones.", INFO))
@@ -2203,7 +2272,7 @@ class TestPrioridadPendientes(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": ["siniestro"],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -2229,14 +2298,14 @@ class TestPrioridadPendientes(FrappeTestCase):
 		self.assertEqual(out["filters"]["recolectable"], ["=", 1])
 		# Sin período en la pregunta se asume el mes en curso.
 		desde, hasta = api._periodo_mes_actual()
-		self.assertEqual(out["filters"]["fechaingreso"], ["between", desde, hasta])
+		self.assertEqual(out["filters"]["fecha_hora_carga"], ["between", desde, hasta])
 
 	def test_con_periodo_se_acota(self):
 		out = api._completar_prioridad_pendientes(
 			self._spec(), "prioridad de las piezas pendientes en septiembre"
 		)
 		self.assertEqual(
-			out["filters"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30"]
+			out["filters"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30"]
 		)
 
 	def test_titulo_y_columnas(self):
@@ -2297,7 +2366,7 @@ class TestSubmarcasDanadas(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -2317,7 +2386,7 @@ class TestSubmarcasDanadas(FrappeTestCase):
 		self.assertEqual(out["order_by"], [{"field": "ingresadas", "dir": "desc"}])
 		self.assertEqual(out["limit"], 10)
 		self.assertEqual(
-			out["filters"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30"]
+			out["filters"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30"]
 		)
 
 	def test_titulo_y_tabla_del_servidor(self):
@@ -2339,7 +2408,7 @@ class TestPromedioPiezasPorSiniestro(FrappeTestCase):
 			"fields": [],
 			"filters": {
 				"marca": ["=", "Nissan"],
-				"fechaingreso": ["between", "2026-09-01", "2026-09-30"],
+				"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"],
 			},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
@@ -2364,7 +2433,7 @@ class TestPromedioPiezasPorSiniestro(FrappeTestCase):
 		self.assertEqual(out["filters"]["marca"], ["=", "Nissan"])
 		self.assertEqual(out["filters"]["recolectable"], ["=", 1])
 		self.assertEqual(
-			out["filters"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30"]
+			out["filters"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30"]
 		)
 		self.assertEqual(out["group_by"], [])
 		self.assertEqual(out["limit"], 1)
@@ -2408,7 +2477,7 @@ class TestMarcasAccidentadas(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -2435,7 +2504,7 @@ class TestMarcasAccidentadas(FrappeTestCase):
 		self.assertEqual(out["limit"], 10)
 		self.assertEqual(out["filters"]["recolectable"], ["=", 1])
 		self.assertEqual(
-			out["filters"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30"]
+			out["filters"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30"]
 		)
 
 	def test_titulo_tabla_y_columnas(self):
@@ -2457,7 +2526,7 @@ class TestPaisDeOrigen(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -2478,7 +2547,7 @@ class TestPaisDeOrigen(FrappeTestCase):
 		self.assertEqual(out["order_by"], [{"field": "siniestros", "dir": "desc"}])
 		self.assertEqual(out["limit"], 10)
 		self.assertEqual(
-			out["filters"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30"]
+			out["filters"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30"]
 		)
 
 	def test_titulo_columnas_y_tabla_del_servidor(self):
@@ -2505,7 +2574,7 @@ class TestCrecimientoSiniestros(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-01-01", "2026-11-02"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-01-01", "2026-11-02"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -2555,7 +2624,7 @@ class TestCrecimientoSiniestros(FrappeTestCase):
 			self._spec(), "¿Cómo ha crecido el número de siniestros?"
 		)
 		out = api._aplicar_periodo(spec, "este_mes", "¿Cómo ha crecido el número de siniestros?")
-		self.assertEqual(out["filters"]["fechaingreso"], spec["filters"]["fechaingreso"])
+		self.assertEqual(out["filters"]["fecha_hora_carga"], spec["filters"]["fecha_hora_carga"])
 
 
 class TestCrecimientoPorDimension(FrappeTestCase):
@@ -2572,7 +2641,7 @@ class TestCrecimientoPorDimension(FrappeTestCase):
 		self.assertEqual(out["group_by"], ["marca", "mes"])
 		self.assertEqual(out["limit"], 500)
 		desde, hasta = api._periodo_ultimos_dos_meses()
-		self.assertEqual(out["filters"]["fechaingreso"], ["between", desde, hasta])
+		self.assertEqual(out["filters"]["fecha_hora_carga"], ["between", desde, hasta])
 		self.assertTrue(api._usa_tabla_servidor(out))
 		self.assertTrue(api._es_crecimiento_siniestros(out))
 
@@ -2643,7 +2712,7 @@ class TestAniosModelo(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -2671,7 +2740,7 @@ class TestAniosModelo(FrappeTestCase):
 		self.assertEqual(out["limit"], 10)
 		self.assertEqual(out["filters"]["modelo"], ["is", "not null"])
 		self.assertEqual(
-			out["filters"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30"]
+			out["filters"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30"]
 		)
 
 	def test_titulo_y_tabla_del_servidor(self):
@@ -2697,7 +2766,7 @@ class TestHayPreferencia(FrappeTestCase):
 		spec = {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 			"group_by": ["taller_asignado", "tipo"],
 			"order_by": [{"field": "piezas", "dir": "desc"}],
@@ -2730,7 +2799,7 @@ class TestPreferenciaPorRegion(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -2794,7 +2863,7 @@ class TestPartePieza(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -2876,7 +2945,7 @@ class TestPiezasMasDanadas(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -2895,7 +2964,7 @@ class TestPiezasMasDanadas(FrappeTestCase):
 		self.assertEqual(out["order_by"], [{"field": "ingresadas", "dir": "desc"}])
 		self.assertEqual(out["limit"], 10)
 		self.assertEqual(
-			out["filters"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30"]
+			out["filters"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30"]
 		)
 
 	def test_titulo_y_tabla_del_servidor(self):
@@ -3025,7 +3094,7 @@ class TestFiltroDanadas(FrappeTestCase):
 		self.assertEqual(out["aggregations"][0]["alias"], "piezas")
 		self.assertEqual(out["aggregations"][0]["filtros"], {"recolectable": ["=", 1]})
 		self.assertEqual(out["filters"]["marca"], ["=", "Nissan"])
-		self.assertIn("fechaingreso", out["filters"])
+		self.assertIn("fecha_hora_carga", out["filters"])
 		self.assertNotIn("order_by", out)
 
 	def test_la_dimension_sale_del_por(self):
@@ -3228,7 +3297,7 @@ class TestMasDanadasEsMasIngresadas(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -3352,7 +3421,7 @@ class TestTablaComparativa(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -3386,7 +3455,7 @@ class TestTablaComparativa(FrappeTestCase):
 		self.assertEqual(out["group_by"], ["marca", "region_pais"])
 		self.assertEqual(out["aggregations"][0]["alias"], "piezas")
 		self.assertEqual(out["filters"]["marca"], ["=", "Nissan"])
-		self.assertEqual(out["filters"]["fechaingreso"][0], "between")
+		self.assertEqual(out["filters"]["fecha_hora_carga"][0], "between")
 
 	def test_la_medida_sigue_a_la_pregunta(self):
 		out = api._completar_tabla_comparativa(
@@ -3456,7 +3525,7 @@ class TestSingularYPlural(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 			"aggregations": [
 				{"func": "count", "field": "*", "alias": "total"},
 				{"func": "count", "field": "*", "alias": "recolectadas"},
@@ -3516,7 +3585,7 @@ class TestMasSeRecolectan(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": filtros
-			or {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			or {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 			"group_by": ["taller_asignado"],
 		}
@@ -3561,7 +3630,7 @@ class TestMasSeRecolectan(FrappeTestCase):
 		)
 		agg = out["aggregations"][0]
 		self.assertEqual(
-			agg["filtros"]["fechaingreso"], ["between", "2026-09-01", "2026-09-30 23:59:59"]
+			agg["filtros"]["fecha_hora_carga"], ["between", "2026-09-01", "2026-09-30 23:59:59"]
 		)
 		# El WHERE global no puede acotar la recolección ni el estatus 100.
 		self.assertNotIn("fecha_hora_recoleccion", out["filters"])
@@ -3597,7 +3666,7 @@ class TestPromedios(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": filtros
-			or {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			or {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 		}
 
@@ -3752,7 +3821,7 @@ class TestPromediosAgrupados(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 		}
 
@@ -3906,7 +3975,7 @@ class TestPromedioSinDatos(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
 		}
 
@@ -4005,7 +4074,7 @@ class TestExplicacionEnCodigo(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 			"aggregations": [{"func": "avg", "field": "preciovale", "alias": "precio_promedio"}],
 			"group_by": ["marca"],
 			"limit": 10,
@@ -4017,7 +4086,7 @@ class TestExplicacionEnCodigo(FrappeTestCase):
 		caras = {
 			"fields": api.COLUMNAS_PRIORIDAD,
 			"aggregations": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 		}
 		self.assertTrue(api._explicacion_en_codigo(caras, "las piezas más caras"))
 
@@ -4069,6 +4138,12 @@ class TestEndpointsWhitelisted(FrappeTestCase):
 
 	def test_los_helpers_no_se_whitelistean(self):
 		self.assertNotIn(api._explicacion_en_codigo, frappe.whitelisted)
+
+	def test_progreso_esta_whitelisteado(self):
+		self.assertIn(api.progreso, frappe.whitelisted)
+		frappe.set_user("Administrator")
+		self.addCleanup(frappe.set_user, "Administrator")
+		frappe.is_whitelisted(api.progreso)
 
 
 class TestPiezasVsPrecios(FrappeTestCase):
@@ -4173,7 +4248,7 @@ class TestPiezasVsPrecios(FrappeTestCase):
 		caras = {
 			"fields": api.COLUMNAS_PRIORIDAD,
 			"aggregations": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 		}
 		self.assertEqual(
 			api._titulo_respuesta_para(caras, "las piezas más caras"), "Piezas más caras"
@@ -4248,7 +4323,7 @@ class TestListaExplicitaEnTabla(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 			"group_by": [],
 		}
@@ -4580,7 +4655,7 @@ class TestMismaPieza(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -4676,7 +4751,7 @@ class TestCruceDePrecios(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		}
 
@@ -4733,7 +4808,7 @@ class TestMayorRecoleccionEnTabla(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-11-01", "2026-11-07 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-11-01", "2026-11-07 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 			"group_by": ["region_pais"],
 			"render_chart": {"x": "region_pais", "y": "piezas"},
@@ -4795,7 +4870,7 @@ class TestComparacionContra(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01", "2026-09-30 23:59:59"]},
 			"order_by": [],
 			"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 		}
@@ -4844,7 +4919,7 @@ class TestComparacionContra(FrappeTestCase):
 		self.assertEqual(out["group_by"], ["marca"])
 		self.assertEqual(out["filters"]["marca"], ["in", ["NISSAN", "CHEVROLET"]])
 		# El período va dentro de la medida, no como filtro global.
-		self.assertNotIn("fechaingreso", out["filters"])
+		self.assertNotIn("fecha_hora_carga", out["filters"])
 		self.assertEqual(out["aggregations"][0]["alias"], "ingresadas")
 
 	def test_dos_medidas_van_en_una_sola_fila(self):
@@ -4872,7 +4947,7 @@ class TestComparacionContra(FrappeTestCase):
 			["total", "recolectadas", "recolectadas_inconsistentes", "recolectadas_periodo"],
 		)
 		self.assertEqual(
-			out["aggregations"][0]["filtros"]["fechaingreso"][1], "2026-09-01 00:00:00"
+			out["aggregations"][0]["filtros"]["fecha_hora_carga"][1], "2026-09-01 00:00:00"
 		)
 
 	def test_tabla_una_fila_por_lado_en_el_orden_de_la_pregunta(self):
@@ -4919,11 +4994,11 @@ class TestComparacionContra(FrappeTestCase):
 			"¿Cómo se compara Nuevo León contra Jalisco en efectividad? en septiembre"
 		)
 		self.assertEqual(spec["doctype"], "Pieza")
-		self.assertEqual(spec["filters"]["fechaingreso"][1], "2026-09-01 00:00:00")
-		self.assertEqual(spec["filters"]["fechaingreso"][2], "2026-09-30 23:59:59")
+		self.assertEqual(spec["filters"]["fecha_hora_carga"][1], "2026-09-01 00:00:00")
+		self.assertEqual(spec["filters"]["fecha_hora_carga"][2], "2026-09-30 23:59:59")
 		# Sin período en la pregunta cae al mes en curso.
 		spec = api._spec_de_comparacion("efectividad de Nuevo León contra Jalisco")
-		self.assertEqual(spec["filters"]["fechaingreso"][1][:7], frappe.utils.nowdate()[:7])
+		self.assertEqual(spec["filters"]["fecha_hora_carga"][1][:7], frappe.utils.nowdate()[:7])
 		# Sin los dos lados no se arma nada: la pregunta sigue el camino normal.
 		self.assertIsNone(api._spec_de_comparacion("piezas de la marca Nissan en septiembre"))
 
@@ -5054,12 +5129,12 @@ class TestTrimestresYCuatrimestres(FrappeTestCase):
 		spec = {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-11-01", "2026-11-07 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-11-01", "2026-11-07 23:59:59"]},
 			"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 		}
 		out = api._aplicar_periodo(spec, "este_mes", "piezas del primer trimestre")
 		self.assertEqual(
-			out["filters"]["fechaingreso"],
+			out["filters"]["fecha_hora_carga"],
 			["between", "2026-01-01 00:00:00", "2026-03-31 23:59:59"],
 		)
 
@@ -5124,7 +5199,7 @@ class TestCrecimientoEntrePeriodos(FrappeTestCase):
 		self.assertEqual(out["group_by"], ["mes"])
 		self.assertEqual(out["order_by"], [{"field": "mes", "dir": "asc"}])
 		self.assertEqual(out["aggregations"][0]["alias"], "piezas")
-		self.assertTrue(out["filters"]["fechaingreso"][1].startswith("2026-01-01"))
+		self.assertTrue(out["filters"]["fecha_hora_carga"][1].startswith("2026-01-01"))
 
 	def test_pendientes_lleva_su_definicion(self):
 		out = api._completar_crecimiento_periodos(
@@ -5207,7 +5282,7 @@ class TestCrecimientoPorDimension(FrappeTestCase):
 		)
 		self.assertEqual(out["group_by"], ["marca", "mes"])
 		self.assertEqual(out["limit"], 500)
-		desde, hasta = out["filters"]["fechaingreso"][1], out["filters"]["fechaingreso"][2]
+		desde, hasta = out["filters"]["fecha_hora_carga"][1], out["filters"]["fecha_hora_carga"][2]
 		# Dos meses completos: ni el actual (a medias) ni uno solo.
 		self.assertTrue(desde < hasta)
 		self.assertEqual(desde[8:10], "01")
@@ -5410,7 +5485,7 @@ class TestVolumenVsEfectividad(FrappeTestCase):
 		self.assertEqual(out["group_by"], ["estadolocalidad"])
 		self.assertEqual(out["limit"], 500)
 		self.assertEqual(
-			out["aggregations"][0]["filtros"]["fechaingreso"][1], "2026-01-01 00:00:00"
+			out["aggregations"][0]["filtros"]["fecha_hora_carga"][1], "2026-01-01 00:00:00"
 		)
 		# Con período en la pregunta manda el del spec (lo pone la cadena).
 		spec = self._spec()
@@ -5421,7 +5496,7 @@ class TestVolumenVsEfectividad(FrappeTestCase):
 			spec, "estados con mucho volumen y baja efectividad en septiembre"
 		)
 		self.assertEqual(
-			out["aggregations"][0]["filtros"]["fechaingreso"][1], "2026-09-01 00:00:00"
+			out["aggregations"][0]["filtros"]["fecha_hora_carga"][1], "2026-09-01 00:00:00"
 		)
 
 	def test_tabla_mucho_volumen_y_baja_efectividad(self):
@@ -5702,15 +5777,15 @@ class TestPorcentajePorDimension(FrappeTestCase):
 			self._spec(), "¿Cuál es el CDR con mayor % de piezas no entregadas?"
 		)
 		self.assertEqual(
-			out["aggregations"][0]["filtros"]["fechaingreso"][1], "2026-01-01 00:00:00"
+			out["aggregations"][0]["filtros"]["fecha_hora_carga"][1], "2026-01-01 00:00:00"
 		)
 		spec = self._spec()
-		spec["filters"] = {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]}
+		spec["filters"] = {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]}
 		out = api._completar_porcentaje_de_categorias(
 			spec, "¿Cuál es el CDR con mayor % de no entregadas en septiembre?"
 		)
 		self.assertEqual(
-			out["aggregations"][0]["filtros"]["fechaingreso"][1], "2026-09-01 00:00:00"
+			out["aggregations"][0]["filtros"]["fecha_hora_carga"][1], "2026-09-01 00:00:00"
 		)
 
 	def test_tabla_con_corte_y_sin_nulos(self):
@@ -5771,7 +5846,7 @@ class TestFichaTaller(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
 			"order_by": [],
 			"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 		}
@@ -5799,7 +5874,7 @@ class TestFichaTaller(FrappeTestCase):
 		self.assertEqual(out["group_by"], [])
 		self.assertEqual(out["limit"], 1)
 		self.assertEqual(out["filters"]["taller_asignado"], ["=", "CELLINI"])
-		self.assertEqual(out["filters"]["fechaingreso"][1], "2026-09-01 00:00:00")
+		self.assertEqual(out["filters"]["fecha_hora_carga"][1], "2026-09-01 00:00:00")
 		self.assertEqual(out["filters"]["recolectable"], ["=", 1])
 
 	def test_periodo_anterior(self):
@@ -5814,7 +5889,7 @@ class TestFichaTaller(FrappeTestCase):
 	def test_tabla_vertical(self):
 		spec = {
 			"group_by": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
 		}
 		columnas_resultado = [
 			"ingresadas",
@@ -5858,7 +5933,7 @@ class TestFichaTaller(FrappeTestCase):
 	def test_variacion_sin_periodo_anterior(self):
 		spec = {
 			"group_by": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
 		}
 		resultado = {
 			"columnas": ["ingresadas", "recolectadas", "no_recolectadas", "pendientes", "marcas"],
@@ -5876,7 +5951,7 @@ class TestPromedioSiniestrosPorTaller(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
 			"order_by": [],
 			"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 		}
@@ -6009,3 +6084,42 @@ class TestCadaComoPor(FrappeTestCase):
 		# “cada taller” en el promedio es el divisor, no la agrupación.
 		pregunta = api._cada_como_por("¿cuántos siniestros atiende en promedio cada taller al mes?")
 		self.assertIsNone(api._dimension_agrupada_promedio_taller(pregunta))
+
+
+class TestProgreso(FrappeTestCase):
+	"""El chat muestra la etapa en la que va la pregunta (dueño, 2026-11-12)."""
+
+	def setUp(self):
+		frappe.set_user(USUARIO_GNP)
+		self.addCleanup(frappe.set_user, "Administrator")
+
+	@patch.object(api, "explain", return_value=("Hay 5 piezas.", INFO))
+	@patch.object(api, "generate_spec", return_value=(SPEC_OK, INFO))
+	def test_ask_marca_la_etapa_final_y_el_endpoint_la_devuelve(self, _spec, _exp):
+		ident = frappe.generate_hash(length=10)
+		self.addCleanup(frappe.cache().delete_value, api._clave_progreso(ident))
+		api.ask("¿cuántas piezas hay?", progreso_id=ident)
+		dato = frappe.cache().get_value(api._clave_progreso(ident))
+		self.assertEqual(dato["etapa"], "respuesta")
+		self.assertEqual(
+			api.progreso(ident), {"etapa": "respuesta", "texto": "Construyendo la respuesta…"}
+		)
+
+	@patch.object(api, "explain", return_value=("Hay 5 piezas.", INFO))
+	@patch.object(api, "generate_spec", return_value=(SPEC_OK, INFO))
+	def test_un_id_invalido_no_escribe_nada(self, _spec, _exp):
+		malo = "../../etc/passwd"
+		api.ask("¿cuántas piezas hay?", progreso_id=malo)
+		self.assertIsNone(frappe.cache().get_value(api._clave_progreso(malo)))
+
+	def test_sin_id_o_desconocido_devuelve_vacio(self):
+		self.assertEqual(api.progreso(None), {"etapa": "", "texto": ""})
+		self.assertEqual(api.progreso("no-existe"), {"etapa": "", "texto": ""})
+		# Un id con formato válido pero sin etapa guardada tampoco inventa texto.
+		desconocido = frappe.generate_hash(length=10)
+		self.assertEqual(api.progreso(desconocido), {"etapa": "", "texto": ""})
+
+	def test_las_etapas_tienen_texto(self):
+		for etapa, texto in api.ETAPAS_PROGRESO.items():
+			self.assertTrue(texto.endswith("…"), etapa)
+		self.assertEqual(len(api.ETAPAS_PROGRESO), 5)

@@ -16,6 +16,7 @@
     "column_break_ia3",
     "max_llamadas_por_minuto",
     "max_tokens_respuesta",
+    "intentos_respuesta",
     "contexto_conv_section",
     "max_turnos_contexto",
     "column_break_ia5",
@@ -116,6 +117,14 @@
       "fieldname": "max_tokens_respuesta",
       "fieldtype": "Int",
       "label": "Máx. tokens de respuesta (solo HTTP)"
+    },
+    {
+      "default": "2",
+      "description": "Cuántas veces se intenta cada llamada al proveedor de IA cuando falla (timeout, error del proveedor, respuesta vacía o JSON inválido). 1 = sin reintento; 2 = un segundo intento. No aplica a errores de saldo ni de configuración, que no se arreglan reintentando.",
+      "fieldname": "intentos_respuesta",
+      "fieldtype": "Int",
+      "label": "Intentos por llamada al modelo",
+      "reqd": 1
     },
     {
       "fieldname": "contexto_conv_section",
@@ -250,11 +259,11 @@
       "fieldtype": "Column Break"
     },
     {
-      "default": "120",
+      "default": "240",
       "fieldname": "presupuesto_analisis_seg",
       "fieldtype": "Int",
       "label": "Presupuesto de tiempo del análisis (segundos)",
-      "description": "Tiempo total para la respuesta analítica, contado desde que llega la pregunta. Si no alcanza, se entrega la respuesta breve con una nota. Máximo 120 (el proxy corta a los 120 s): la respuesta de respaldo necesita ~35 s, que el análisis no usa.",
+      "description": "Tiempo total para la respuesta analítica, contado desde que llega la pregunta. Si no alcanza, se entrega la respuesta breve con una nota. Máximo 240 (el proxy corta a los 240 s): la respuesta de respaldo necesita ~35 s, que el análisis no usa.",
       "reqd": 1
     },
     {
@@ -341,7 +350,7 @@
   "index_web_pages_for_search": 0,
   "issingle": 1,
   "links": [],
-  "modified": "2026-10-06 00:00:00.000000",
+  "modified": "2026-11-12 12:00:00.000000",
   "modified_by": "Administrator",
   "module": "Molduplastic IA",
   "name": "Molduplastic IA Settings",

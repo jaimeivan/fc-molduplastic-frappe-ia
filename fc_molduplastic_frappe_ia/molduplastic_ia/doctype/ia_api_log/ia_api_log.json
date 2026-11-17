@@ -35,10 +35,15 @@
     "prompt",
     "column_break_log3",
     "respuesta",
+    "motivo_consulta",
+    "consulta_spec",
     "metricas_section",
     "tokens_entrada",
     "tokens_salida",
     "latencia_ms",
+    "latencia_construccion_ms",
+    "latencia_bd_ms",
+    "latencia_total_ms",
     "column_break_log4",
     "costo_estimado_usd",
     "error"
@@ -113,7 +118,7 @@
       "fieldtype": "Select",
       "in_list_view": 1,
       "label": "Operación",
-      "options": "generate_spec\nexplain"
+      "options": "generate_spec\nexplain\ncomplementary"
     },
     {
       "default": "0",
@@ -175,6 +180,18 @@
       "label": "Respuesta recibida (completa)"
     },
     {
+      "fieldname": "motivo_consulta",
+      "fieldtype": "Data",
+      "label": "Motivo de la consulta",
+      "description": "Solo en operaciones complementary: para qué se hizo la consulta dentro del análisis."
+    },
+    {
+      "fieldname": "consulta_spec",
+      "fieldtype": "Code",
+      "label": "Spec de la consulta",
+      "description": "Solo en operaciones complementary: spec JSON ejecutado (sin SQL crudo)."
+    },
+    {
       "fieldname": "metricas_section",
       "fieldtype": "Section Break",
       "label": "Métricas"
@@ -195,7 +212,29 @@
       "default": "0",
       "fieldname": "latencia_ms",
       "fieldtype": "Int",
-      "label": "Latencia (ms)"
+      "label": "Latencia LLM (ms)",
+      "description": "Tiempo de la llamada al proveedor de IA de esta fila."
+    },
+    {
+      "default": "0",
+      "fieldname": "latencia_construccion_ms",
+      "fieldtype": "Int",
+      "label": "Latencia de construcción del query (ms)",
+      "description": "Tiempo del código que completa el spec, sanea el orden y aplica el período (sin LLM ni BD)."
+    },
+    {
+      "default": "0",
+      "fieldname": "latencia_bd_ms",
+      "fieldtype": "Int",
+      "label": "Latencia de consulta a BD (ms)",
+      "description": "Tiempo total de ejecutar() en el turno: validación del spec, SQL principal, cobertura y consultas derivadas."
+    },
+    {
+      "default": "0",
+      "fieldname": "latencia_total_ms",
+      "fieldtype": "Int",
+      "label": "Latencia total del turno (ms)",
+      "description": "Tiempo de pared desde que llega la pregunta hasta que la respuesta queda armada y guardada."
     },
     {
       "fieldname": "column_break_log4",

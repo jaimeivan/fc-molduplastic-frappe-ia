@@ -17,6 +17,11 @@ from fc_molduplastic_frappe_ia.molduplastic_ia.validate_spec import SpecInvalida
 
 USUARIO_GNP = "pruebas.gnp@molduplastic.test"
 
+# Universo del asistente desde el 2026-11-17, igual al de VW_PIEZAS: solo
+# piezas recolectables con una ruta válida. Las comparaciones contra SQL directo
+# tienen que aplicarlo para hablar de la misma población.
+UNIVERSO_SQL = " AND recolectable = 1 AND rutas_validas = '1'"
+
 
 class TestRegionDe(FrappeTestCase):
 	"""La región de un lugar la resuelve el servidor, no el modelo."""
@@ -158,6 +163,7 @@ class TestTenant(FrappeTestCase):
 		)
 		esperado = frappe.db.sql(
 			"SELECT COUNT(DISTINCT siniestro) FROM tabPieza WHERE aseguradora = '6'"
+			+ UNIVERSO_SQL
 		)[0][0]
 		self.assertEqual(res["filas"][0][0], esperado)
 
@@ -207,8 +213,7 @@ class TestTenant(FrappeTestCase):
 			"""
 			SELECT COALESCE(SUM(CASE WHEN fecha_hora_recoleccion IS NOT NULL THEN preciovale END), 0),
 			       COALESCE(SUM(CASE WHEN fecha_hora_recoleccion IS NULL THEN preciovale END), 0)
-			FROM tabPieza WHERE aseguradora = '1'
-			"""
+			FROM tabPieza WHERE aseguradora = '1'""" + UNIVERSO_SQL
 		)[0]
 		self.assertAlmostEqual(float(res["filas"][0][0]), float(esperado[0]), places=2)
 		self.assertAlmostEqual(float(res["filas"][0][1]), float(esperado[1]), places=2)
@@ -219,7 +224,7 @@ class TestTenant(FrappeTestCase):
 			{
 				"doctype": "Pieza",
 				"fields": [],
-				"filters": {"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-10-14 23:59:59"]},
+				"filters": {"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-14 23:59:59"]},
 				"aggregations": [
 					{
 						"func": "count",
@@ -234,8 +239,8 @@ class TestTenant(FrappeTestCase):
 			"Administrator",
 		)
 		esperado = frappe.db.sql(
-			"SELECT COUNT(*) FROM tabPieza WHERE fechaingreso BETWEEN %s AND %s "
-			"AND fecha_hora_recoleccion BETWEEN %s AND %s",
+			"SELECT COUNT(*) FROM tabPieza WHERE fecha_hora_carga BETWEEN %s AND %s "
+			"AND fecha_hora_recoleccion BETWEEN %s AND %s" + UNIVERSO_SQL,
 			("2026-01-01 00:00:00", "2026-10-14 23:59:59", "2026-01-01 00:00:00", "2026-10-14 23:59:59"),
 		)[0][0]
 		self.assertEqual(res["filas"][0][0], esperado)
@@ -288,7 +293,7 @@ class TestTenant(FrappeTestCase):
 			{
 				"doctype": "Pieza",
 				"fields": [],
-				"filters": {"fechaingreso": ["between", "2026-10-01 00:00:00", "2026-10-19 23:59:59"]},
+				"filters": {"fecha_hora_carga": ["between", "2026-10-01 00:00:00", "2026-10-19 23:59:59"]},
 				"aggregations": [
 					{
 						"func": "sum",
@@ -342,7 +347,7 @@ class TestRegionPais(FrappeTestCase):
 			{
 				"doctype": "Pieza",
 				"fields": [],
-				"filters": {"fechaingreso": ["between", "2026-01-01 00:00:00", "2026-10-16 23:59:59"]},
+				"filters": {"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-16 23:59:59"]},
 				"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 				"group_by": ["region_pais"],
 				"order_by": [{"field": "piezas", "dir": "desc"}],
@@ -374,6 +379,7 @@ class TestRegionPais(FrappeTestCase):
 		esperado = frappe.db.sql(
 			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora = '1' AND estadolocalidad IN "
 			"('NUEVO LEÓN', 'Nuevo León', 'CHIHUAHUA', 'Chihuahua', 'COAHUILA', 'Coahuila')"
+			+ UNIVERSO_SQL
 		)[0][0]
 		norte = [f[1] for f in res["filas"] if f[0] == "Norte"][0]
 		self.assertGreaterEqual(norte, esperado)
@@ -394,7 +400,7 @@ class TestRecolectadasEstrictas(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", *self.OCT]},
+			"filters": {"fecha_hora_carga": ["between", *self.OCT]},
 			"aggregations": [
 				{
 					"func": "count",
@@ -403,8 +409,8 @@ class TestRecolectadasEstrictas(FrappeTestCase):
 					"filtros": {
 						"id_estatus": ["=", 100],
 						"fecha_hora_recoleccion": [
-							["mes_igual", {"campo": "fechaingreso"}],
-							[">=", {"campo": "fechaingreso"}],
+							["mes_igual", {"campo": "fecha_hora_carga"}],
+							[">=", {"campo": "fecha_hora_carga"}],
 						],
 					},
 				}
@@ -417,9 +423,9 @@ class TestRecolectadasEstrictas(FrappeTestCase):
 		res = ejecutar(self._spec_recolectadas(), "Administrator", alcance="1")
 		esperado = frappe.db.sql(
 			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora = '1' "
-			"AND fechaingreso BETWEEN %s AND %s AND id_estatus = 100 "
-			"AND fecha_hora_recoleccion >= fechaingreso "
-			"AND DATE_FORMAT(fecha_hora_recoleccion, '%%Y-%%m') = DATE_FORMAT(fechaingreso, '%%Y-%%m')",
+			"AND fecha_hora_carga BETWEEN %s AND %s AND id_estatus = 100 "
+			"AND fecha_hora_recoleccion >= fecha_hora_carga "
+			"AND DATE_FORMAT(fecha_hora_recoleccion, '%%Y-%%m') = DATE_FORMAT(fecha_hora_carga, '%%Y-%%m')",
 			tuple(self.OCT),
 		)[0][0]
 		self.assertEqual(res["filas"][0][0], esperado)
@@ -429,7 +435,7 @@ class TestRecolectadasEstrictas(FrappeTestCase):
 		res = ejecutar(self._spec_recolectadas(), "Administrator", alcance="1")
 		con_fecha = frappe.db.sql(
 			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora = '1' "
-			"AND fechaingreso BETWEEN %s AND %s AND fecha_hora_recoleccion IS NOT NULL",
+			"AND fecha_hora_carga BETWEEN %s AND %s AND fecha_hora_recoleccion IS NOT NULL",
 			tuple(self.OCT),
 		)[0][0]
 		self.assertLessEqual(res["filas"][0][0], con_fecha)
@@ -440,7 +446,7 @@ class TestRecolectadasEstrictas(FrappeTestCase):
 			{
 				"doctype": "Pieza",
 				"fields": [],
-				"filters": {"fechaingreso": ["between", *self.OCT]},
+				"filters": {"fecha_hora_carga": ["between", *self.OCT]},
 				"aggregations": [
 					{
 						"func": "count",
@@ -448,7 +454,7 @@ class TestRecolectadasEstrictas(FrappeTestCase):
 						"alias": "n",
 						"filtros": {
 							"fecha_hora_recoleccion": [
-								["mes_igual", {"campo": "fechaingreso"}]
+								["mes_igual", {"campo": "fecha_hora_carga"}]
 							]
 						},
 					}
@@ -461,8 +467,8 @@ class TestRecolectadasEstrictas(FrappeTestCase):
 		)
 		esperado = frappe.db.sql(
 			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora = '1' "
-			"AND fechaingreso BETWEEN %s AND %s "
-			"AND DATE_FORMAT(fecha_hora_recoleccion, '%%Y-%%m') = DATE_FORMAT(fechaingreso, '%%Y-%%m')",
+			"AND fecha_hora_carga BETWEEN %s AND %s "
+			"AND DATE_FORMAT(fecha_hora_recoleccion, '%%Y-%%m') = DATE_FORMAT(fecha_hora_carga, '%%Y-%%m')",
 			tuple(self.OCT),
 		)[0][0]
 		self.assertEqual(res["filas"][0][0], esperado)
@@ -487,8 +493,8 @@ class TestRezagadas(FrappeTestCase):
 						"filtros": {
 							"fecha_hora_recoleccion": [
 								["between", *self.OCT],
-								[">", {"campo": "fechaingreso"}],
-								["mes_distinto", {"campo": "fechaingreso"}],
+								[">", {"campo": "fecha_hora_carga"}],
+								["mes_distinto", {"campo": "fecha_hora_carga"}],
 							]
 						},
 					}
@@ -502,8 +508,8 @@ class TestRezagadas(FrappeTestCase):
 		esperado = frappe.db.sql(
 			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora = '1' "
 			"AND fecha_hora_recoleccion BETWEEN %s AND %s "
-			"AND fecha_hora_recoleccion > fechaingreso "
-			"AND DATE_FORMAT(fecha_hora_recoleccion, '%%Y-%%m') != DATE_FORMAT(fechaingreso, '%%Y-%%m')",
+			"AND fecha_hora_recoleccion > fecha_hora_carga "
+			"AND DATE_FORMAT(fecha_hora_recoleccion, '%%Y-%%m') != DATE_FORMAT(fecha_hora_carga, '%%Y-%%m')",
 			tuple(self.OCT),
 		)[0][0]
 		self.assertEqual(res["filas"][0][0], esperado)
@@ -522,7 +528,7 @@ class TestRezagadas(FrappeTestCase):
 						"filtros": {
 							"fecha_hora_recoleccion": [
 								["between", *self.OCT],
-								["<", {"campo": "fechaingreso"}],
+								["<", {"campo": "fecha_hora_carga"}],
 							]
 						},
 					}
@@ -536,13 +542,13 @@ class TestRezagadas(FrappeTestCase):
 		esperado = frappe.db.sql(
 			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora = '1' "
 			"AND fecha_hora_recoleccion BETWEEN %s AND %s "
-			"AND fecha_hora_recoleccion < fechaingreso",
+			"AND fecha_hora_recoleccion < fecha_hora_carga",
 			tuple(self.OCT),
 		)[0][0]
 		self.assertEqual(res["filas"][0][0], esperado)
 
 	def test_cobertura_incluye_campo_referido(self):
-		"""fechaingreso solo aparece como {"campo": ...}: igual debe salir en cobertura."""
+		"""fecha_hora_carga solo aparece como {"campo": ...}: igual debe salir en cobertura."""
 		res = ejecutar(
 			{
 				"doctype": "Pieza",
@@ -556,7 +562,7 @@ class TestRezagadas(FrappeTestCase):
 						"filtros": {
 							"fecha_hora_recoleccion": [
 								">",
-								{"campo": "fechaingreso"},
+								{"campo": "fecha_hora_carga"},
 							]
 						},
 					}
@@ -567,7 +573,7 @@ class TestRezagadas(FrappeTestCase):
 			"Administrator",
 			alcance="1",
 		)
-		self.assertIn("fechaingreso", res["cobertura"]["campos"])
+		self.assertIn("fecha_hora_carga", res["cobertura"]["campos"])
 
 
 class TestEfectividadConRezagadas(FrappeTestCase):
@@ -580,7 +586,7 @@ class TestEfectividadConRezagadas(FrappeTestCase):
 		return {
 			"doctype": "Pieza",
 			"fields": [],
-			"filters": {"fechaingreso": ["between", desde, hasta], "recolectable": ["=", 1]},
+			"filters": {"fecha_hora_carga": ["between", desde, hasta], "recolectable": ["=", 1]},
 			"aggregations": [
 				{"func": "count", "field": "*", "alias": "total"},
 				{
@@ -590,8 +596,8 @@ class TestEfectividadConRezagadas(FrappeTestCase):
 					"filtros": {
 						"id_estatus": ["=", 100],
 						"fecha_hora_recoleccion": [
-							["mes_igual", {"campo": "fechaingreso"}],
-							[">=", {"campo": "fechaingreso"}],
+							["mes_igual", {"campo": "fecha_hora_carga"}],
+							[">=", {"campo": "fecha_hora_carga"}],
 						],
 					},
 				},
@@ -600,7 +606,7 @@ class TestEfectividadConRezagadas(FrappeTestCase):
 					"field": "*",
 					"alias": "inconsistentes_recolectadas",
 					"filtros": {
-						"fecha_hora_recoleccion": ["<", {"campo": "fechaingreso"}],
+						"fecha_hora_recoleccion": ["<", {"campo": "fecha_hora_carga"}],
 						"id_estatus": ["=", 100],
 					},
 				},
@@ -610,7 +616,7 @@ class TestEfectividadConRezagadas(FrappeTestCase):
 					"alias": "rezagadas_recolectadas",
 					"filtros": {
 						"fecha_hora_recoleccion": ["between", desde, hasta],
-						"fechaingreso": ["<", desde],
+						"fecha_hora_carga": ["<", desde],
 						"id_estatus": ["=", 100],
 					},
 				},
@@ -628,19 +634,19 @@ class TestEfectividadConRezagadas(FrappeTestCase):
 		total, rec, inc, rez = res["filas"][0]
 		esperado = frappe.db.sql(
 			"SELECT COUNT(*), "
-			"COUNT(CASE WHEN id_estatus = 100 AND fecha_hora_recoleccion >= fechaingreso "
+			"COUNT(CASE WHEN id_estatus = 100 AND fecha_hora_recoleccion >= fecha_hora_carga "
 			"AND DATE_FORMAT(fecha_hora_recoleccion, '%%Y-%%m') = "
-			"DATE_FORMAT(fechaingreso, '%%Y-%%m') THEN 1 END), "
-			"COUNT(CASE WHEN fecha_hora_recoleccion < fechaingreso "
+			"DATE_FORMAT(fecha_hora_carga, '%%Y-%%m') THEN 1 END), "
+			"COUNT(CASE WHEN fecha_hora_recoleccion < fecha_hora_carga "
 			"AND id_estatus = 100 THEN 1 END) "
-			"FROM tabPieza WHERE aseguradora = '1' AND recolectable = 1 "
-			"AND fechaingreso BETWEEN %s AND %s",
+			"FROM tabPieza WHERE aseguradora = '1' AND recolectable = 1 AND rutas_validas = '1' "
+			"AND fecha_hora_carga BETWEEN %s AND %s",
 			tuple(self.SEP),
 		)[0]
 		rez_esperado = frappe.db.sql(
 			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora = '1' "
 			"AND fecha_hora_recoleccion BETWEEN %s AND %s "
-			"AND fechaingreso < %s AND id_estatus = 100",
+			"AND fecha_hora_carga < %s AND id_estatus = 100 AND recolectable = 1 AND rutas_validas = '1'",
 			(self.SEP[0], self.SEP[1], self.SEP[0]),
 		)[0][0]
 		self.assertEqual((total, rec, inc), tuple(esperado))
@@ -671,20 +677,20 @@ class TestNoRecuperadas(FrappeTestCase):
 		directo = (
 			frappe.db.sql(
 				f"""SELECT COUNT(*) FROM tabPieza WHERE {base}
-				AND fechaingreso BETWEEN %s AND %s AND recolectable = 1
-				AND fecha_hora_recoleccion >= fechaingreso""",
+				AND fecha_hora_carga BETWEEN %s AND %s AND recolectable = 1
+				AND fecha_hora_recoleccion >= fecha_hora_carga""",
 				(desde, hasta),
 			)[0][0]
 			+ frappe.db.sql(
 				f"""SELECT COUNT(*) FROM tabPieza WHERE {base}
-				AND fechaingreso BETWEEN %s AND %s
-				AND fecha_hora_recoleccion < fechaingreso""",
+				AND fecha_hora_carga BETWEEN %s AND %s
+				AND fecha_hora_recoleccion < fecha_hora_carga""",
 				(desde, hasta),
 			)[0][0]
 			+ frappe.db.sql(
 				f"""SELECT COUNT(*) FROM tabPieza WHERE {base}
 				AND fecha_hora_recoleccion BETWEEN %s AND %s
-				AND fechaingreso < %s""",
+				AND fecha_hora_carga < %s""",
 				(desde, hasta, desde),
 			)[0][0]
 		)
@@ -878,7 +884,7 @@ class TestFiltroAseguradoraEnExecutor(FrappeTestCase):
 	SPEC = {
 		"doctype": "Pieza",
 		"fields": [],
-		"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+		"filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
 		"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
 		"group_by": [],
 		"limit": 1,
@@ -900,7 +906,8 @@ class TestFiltroAseguradoraEnExecutor(FrappeTestCase):
 		res = ejecutar(spec, "Administrator", alcance="TODAS")
 		directo = frappe.db.sql(
 			"""SELECT COUNT(*) FROM tabPieza
-			WHERE aseguradora = '7' AND fechaingreso BETWEEN '2026-09-01' AND '2026-09-30 23:59:59'"""
+			WHERE aseguradora = '7' AND fecha_hora_carga BETWEEN '2026-09-01' AND '2026-09-30 23:59:59'"""
+			+ UNIVERSO_SQL
 		)[0][0]
 		self.assertEqual(res["filas"][0][0], directo)
 		self.assertGreater(directo, 0)
@@ -933,7 +940,7 @@ class TestLikeConComodinInterno(FrappeTestCase):
 			"doctype": "Pieza",
 			"fields": [],
 			"filters": {
-				"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"],
+				"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"],
 				"piezades": ["like", "FACIA%DEL%"],
 			},
 			"aggregations": [
@@ -950,9 +957,70 @@ class TestLikeConComodinInterno(FrappeTestCase):
 		res = ejecutar(spec, "Administrator", alcance="1")
 		directo = frappe.db.sql(
 			"""SELECT COUNT(*) FROM tabPieza
-			WHERE aseguradora = '1' AND recolectable = 1
-			AND fechaingreso BETWEEN '2026-09-01 00:00:00' AND '2026-09-30 23:59:59'
+			WHERE aseguradora = '1' AND recolectable = 1 AND rutas_validas = '1'
+			AND fecha_hora_carga BETWEEN '2026-09-01 00:00:00' AND '2026-09-30 23:59:59'
 			AND piezades LIKE 'FACIA%DEL%'"""
 		)[0][0]
 		self.assertGreater(directo, 0)
 		self.assertEqual(res["filas"][0][0], directo)
+
+
+class TestUniversoBI(FrappeTestCase):
+	"""El ejecutor aplica el universo de VW_PIEZAS (2026-11-17).
+
+	Toda medida de Pieza cuenta solo piezas recolectables con una ruta válida,
+	aunque el spec no lo pida. Es la población que publican los tableros.
+	"""
+
+	def test_el_universo_se_aplica_aunque_el_spec_no_lo_pida(self):
+		res = ejecutar(
+			{
+				"doctype": "Pieza",
+				"fields": [],
+				"filters": {},
+				"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
+				"group_by": [],
+				"limit": 1,
+			},
+			"Administrator",
+		)
+		directo = frappe.db.sql(
+			"SELECT COUNT(*) FROM tabPieza WHERE recolectable = 1 AND rutas_validas = '1'"
+		)[0][0]
+		self.assertEqual(res["filas"][0][0], directo)
+
+	def test_coincide_con_la_vista_de_bi_por_mes(self):
+		"""La reconciliación con BI: mismo mes, mismo tenant, misma cifra."""
+		desde, hasta = "2026-09-01 00:00:00", "2026-09-30 23:59:59"
+		res = ejecutar(
+			{
+				"doctype": "Pieza",
+				"fields": [],
+				"filters": {"fecha_hora_carga": ["between", desde, hasta], "aseguradora": ["=", "6"]},
+				"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
+				"group_by": [],
+				"limit": 1,
+			},
+			"Administrator",
+		)
+		vista = frappe.db.sql(
+			"SELECT COUNT(*) FROM vwPiezas WHERE Aseguradora = 'GNP' "
+			"AND FechaIngreso BETWEEN %s AND %s",
+			(desde, hasta),
+		)[0][0]
+		self.assertGreater(vista, 0)
+		self.assertEqual(res["filas"][0][0], vista)
+
+	def test_no_aplica_a_recoleccion_ni_taller(self):
+		res = ejecutar(
+			{
+				"doctype": "Taller",
+				"fields": [],
+				"filters": {},
+				"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
+				"group_by": [],
+				"limit": 1,
+			},
+			"Administrator",
+		)
+		self.assertGreaterEqual(res["filas"][0][0], 1)

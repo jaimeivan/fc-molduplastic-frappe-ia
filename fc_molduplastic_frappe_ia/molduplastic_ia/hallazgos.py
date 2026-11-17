@@ -16,6 +16,18 @@ from fc_molduplastic_frappe_ia.molduplastic_ia import analisis as calc
 
 SEVERIDADES = ("baja", "media", "alta")
 
+# El parche `sembrar_analisis_ia` deja este marcador en el umbral, las causas y
+# la acción que el negocio todavía no ha escrito. No es contenido: si aparece,
+# el campo se ignora, porque el chat no puede mostrar "[pendiente de validación
+# del administrador]" como si fuera una recomendación (pasó el 2026-11-17 en la
+# conversación bgb0j12hqj, con la entrada "Efectividad" en Validado).
+MARCADOR_PENDIENTE = "pendiente de validación"
+
+
+def es_pendiente(texto):
+	"""True si el texto es (o contiene) el marcador de contenido sin validar."""
+	return MARCADOR_PENDIENTE in (texto or "").lower()
+
 
 def _hallazgo(codigo, severidad, texto_base, cifras):
 	return {
@@ -178,6 +190,11 @@ def construir(analisis, cfg, glosario_validado):
 			continue
 		termino = TERMINO_DE_HALLAZGO.get(h["codigo"])
 		for fila in glosario_validado or []:
-			if fila.get("termino") == termino and fila.get("accion"):
-				sugerencias.append({"hallazgo": h["codigo"], "termino": termino, "accion": fila["accion"]})
+			if fila.get("termino") != termino or not fila.get("accion"):
+				continue
+			if es_pendiente(fila["accion"]):
+				# El administrador marcó la entrada sin escribir la acción: no hay
+				# sugerencia que mostrar (nunca el marcador de pendiente).
+				continue
+			sugerencias.append({"hallazgo": h["codigo"], "termino": termino, "accion": fila["accion"]})
 	return {"hallazgos": hallazgos, "sugerencias": sugerencias}

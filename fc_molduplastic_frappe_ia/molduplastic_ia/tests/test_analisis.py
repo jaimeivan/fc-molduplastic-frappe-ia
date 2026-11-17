@@ -133,7 +133,7 @@ class TestModoDeRespuesta(ConfigMixin, FrappeTestCase):
 
 	def test_objetivo_y_presupuesto_dentro_de_rango(self):
 		for campos in ({"objetivo_efectividad": 0}, {"objetivo_efectividad": 101},
-			{"presupuesto_analisis_seg": 121}, {"presupuesto_analisis_seg": 4}):
+			{"presupuesto_analisis_seg": 241}, {"presupuesto_analisis_seg": 4}):
 			with self.subTest(campos=campos):
 				s = frappe.get_doc(SETTINGS)
 				for k, v in campos.items():
@@ -201,17 +201,82 @@ class TestExplainModos(ConfigMixin, FrappeTestCase):
 		self.assertIn("MODO ANALÍTICO", sistema)
 		self.assertTrue(sistema.startswith(F.SYSTEM_EXPLAIN))
 
+	def test_sugerencias_agregan_el_cierre_amable(self):
+		capturado = self._capturar()
+		F.explain(
+			"¿cuántas piezas hay?", SPEC_OK, RESULTADO, modo="Analítico",
+			sugerencias=["¿Y por taller?", "¿Y por región?"],
+		)
+		sistema = capturado["mensajes"][0]["content"]
+		self.assertIn("INVITACIÓN FINAL", sistema)
+		self.assertIn("Sugerencia:", sistema)
+		# Las preguntas concretas viajan en el prompt para que la invitación sea pertinente.
+		self.assertIn("¿Y por taller?", sistema)
+
+	def test_sin_sugerencias_no_hay_cierre_amable(self):
+		capturado = self._capturar()
+		F.explain("¿cuántas piezas hay?", SPEC_OK, RESULTADO, modo="Analítico")
+		self.assertNotIn("INVITACIÓN FINAL", capturado["mensajes"][0]["content"])
+
+	def test_breve_no_agrega_el_cierre_aunque_haya_sugerencias(self):
+		capturado = self._capturar()
+		F.explain(
+			"¿cuántas piezas hay?", SPEC_OK, RESULTADO, modo="Breve",
+			sugerencias=["¿Y por taller?"],
+		)
+		self.assertEqual(capturado["mensajes"][0]["content"], F.SYSTEM_EXPLAIN)
+
 	def test_prompt_analitico_no_convierte_un_comparativo_vacio_en_falta_de_datos(self):
 		# Un conteo no trae comparativos: el modelo no debe leer eso como "sin datos".
 		self.assertIn("NO lo menciones", F.SYSTEM_EXPLAIN_ANALITICO)
 		self.assertIn("sin_base", F.SYSTEM_EXPLAIN_ANALITICO)
+
+	def test_prompt_analitico_usa_titulos_conversacionales(self):
+		# El dueño pidió títulos humanos: "Lectura" suena a reporte técnico.
+		prompt = F.SYSTEM_EXPLAIN_ANALITICO
+		self.assertIn("**Lo que veo**", prompt)
+		self.assertIn("Ojo con esto", prompt)
+		self.assertIn("Qué te sugiero", prompt)
+		self.assertNotIn("2. Lectura", prompt)
+		self.assertIn('nunca "Lectura", "Alertas" ni "Sugerencias"', prompt)
+		self.assertIn("No\nveo nada fuera de lo normal", prompt)
+
+	def test_el_marcador_de_pendiente_no_viaja_al_prompt(self):
+		# "Efectividad" está en Validado pero con causas y acción sin escribir: el
+		# prompt lleva la definición y el umbral, nunca el marcador de pendiente.
+		nombres = frappe.get_all(
+			"IA Glosario", filters={"intencion": "efectividad"}, pluck="name"
+		)
+		self.assertTrue(nombres)
+		previo = frappe.db.get_value("IA Glosario", nombres[0], "estado")
+		frappe.db.set_value("IA Glosario", nombres[0], "estado", "Validado")
+		self.addCleanup(frappe.db.set_value, "IA Glosario", nombres[0], "estado", previo)
+		self.addCleanup(frappe.clear_document_cache, SETTINGS, SETTINGS)
+		frappe.clear_document_cache(SETTINGS, SETTINGS)
+		capturado = self._capturar()
+		F.explain(
+			"¿efectividad por taller?", SPEC_OK, RESULTADO, modo="Analítico", intencion="efectividad"
+		)
+		contenido = "\n".join(m["content"] for m in capturado["mensajes"])
+		self.assertIn("Glosario de negocio validado", contenido)
+		self.assertIn("Recolectadas sobre ingresadas", contenido)
+		self.assertNotIn("pendiente de validación", contenido)
+		self.assertNotIn("Causas típicas", contenido)
+		self.assertNotIn("Acción recomendada", contenido)
+
+	def test_los_dos_prompts_piden_un_tono_humano(self):
+		for prompt in (F.SYSTEM_EXPLAIN, F.SYSTEM_EXPLAIN_ANALITICO):
+			self.assertIn("compañero de trabajo", prompt)
+			self.assertIn("tutea", prompt.lower())
 
 	def test_glosario_solo_con_entradas_validadas_de_la_intencion(self):
 		filas = frappe.get_all(
 			"IA Glosario", filters={"intencion": "efectividad"}, pluck="name"
 		)
 		self.assertTrue(filas, "el glosario inicial debe tener la efectividad")
+		anterior = frappe.db.get_value("IA Glosario", filas[0], "estado")
 		frappe.db.set_value("IA Glosario", filas[0], "estado", "Validado")
+		self.addCleanup(frappe.db.set_value, "IA Glosario", filas[0], "estado", anterior)
 		frappe.clear_document_cache(SETTINGS, SETTINGS)
 		capturado = self._capturar()
 		F.explain("¿efectividad por taller?", SPEC_OK, RESULTADO, modo="Analítico", intencion="efectividad")
@@ -220,11 +285,26 @@ class TestExplainModos(ConfigMixin, FrappeTestCase):
 		self.assertIn("Recolectadas sobre ingresadas", contenido)
 
 	def test_borrador_no_entra_al_prompt(self):
+		# El estado del glosario en la BD no debe decidir el resultado: se pasan
+		# todas las entradas a Borrador y se restauran al terminar.
+		estados = {
+			f["name"]: f["estado"]
+			for f in frappe.get_all("IA Glosario", fields=["name", "estado"])
+		}
+		for nombre in estados:
+			frappe.db.set_value("IA Glosario", nombre, "estado", "Borrador")
+		self.addCleanup(self._restaurar_glosario, estados)
+		frappe.clear_document_cache(SETTINGS, SETTINGS)
 		capturado = self._capturar()
 		F.explain("¿pendientes por resumen?", SPEC_OK, RESULTADO, modo="Analítico", intencion="resumen")
 		contenido = "\n".join(m["content"] for m in capturado["mensajes"])
 		self.assertNotIn("Glosario de negocio validado", contenido)
 		self.assertNotIn("[pendiente de validación", contenido)
+
+	def _restaurar_glosario(self, estados):
+		for nombre, estado in estados.items():
+			frappe.db.set_value("IA Glosario", nombre, "estado", estado)
+		frappe.clear_document_cache(SETTINGS, SETTINGS)
 
 	def test_breve_nunca_inyecta_glosario(self):
 		filas = frappe.get_all("IA Glosario", filters={"intencion": "efectividad"}, pluck="name")
@@ -390,3 +470,33 @@ class TestGlosarioInicial(FrappeTestCase):
 		for fila in filas:
 			if fila.estado == "Borrador" and fila.causas:
 				self.assertIn("pendiente de validación", fila.causas)
+
+	def test_marcar_validado_con_el_texto_pendiente_no_se_guarda(self):
+		s = frappe.get_doc(SETTINGS)
+		s.append(
+			"glosario",
+			{
+				"intencion": "efectividad",
+				"termino": "Caída de efectividad",
+				"estado": "Validado",
+				"accion": "[pendiente de validación del administrador]",
+			},
+		)
+		with self.assertRaises(frappe.ValidationError):
+			s.save(ignore_permissions=True)
+		frappe.clear_document_cache(SETTINGS, SETTINGS)
+
+	def test_una_entrada_que_ya_estaba_validada_se_puede_seguir_guardando(self):
+		# Así el administrador corrige de a poco sin quedar bloqueado al guardar
+		# el resto de la configuración.
+		fila = frappe.get_all("IA Glosario", filters={"intencion": "efectividad"}, pluck="name")[0]
+		previo = frappe.db.get_value("IA Glosario", fila, ["estado", "accion"], as_dict=True)
+		frappe.db.set_value(
+			"IA Glosario", fila,
+			{"estado": "Validado", "accion": "[pendiente de validación del administrador]"},
+		)
+		self.addCleanup(frappe.db.set_value, "IA Glosario", fila, dict(previo))
+		self.addCleanup(frappe.clear_document_cache, SETTINGS, SETTINGS)
+		s = frappe.get_doc(SETTINGS)
+		s.save(ignore_permissions=True)
+		self.assertEqual(frappe.db.get_value("IA Glosario", fila, "estado"), "Validado")

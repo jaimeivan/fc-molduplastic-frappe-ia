@@ -106,6 +106,89 @@ class FakeAdapter:
 		return "{}", {"entrada": 0, "salida": 0}, 0, 0.0
 
 
+class TestReintentos(FrappeTestCase):
+	"""Un fallo del proveedor se reintenta según `intentos_respuesta` (2026-11-12)."""
+
+	def _con(self, fn, intentos=2):
+		with patch.object(F, "intentos_respuesta", return_value=intentos), \
+			patch.object(F.frappe, "get_cached_doc", return_value=settings_stub()):
+			return F._con_fallback([fila_zen()], fn)
+
+	def test_falla_una_vez_y_el_segundo_intento_responde(self):
+		llamadas = []
+
+		def fn(adapter):
+			llamadas.append(1)
+			if len(llamadas) == 1:
+				raise F.LLMProviderError("se cayó")
+			return "ok", {"entrada": 1, "salida": 2}, 10, 0.0
+
+		texto, info = self._con(fn)
+		self.assertEqual(texto, "ok")
+		self.assertEqual(len(llamadas), 2)
+		self.assertTrue(info["es_fallback"])
+		self.assertIn("se cayó", info["motivo_fallback"])
+
+	def test_con_un_solo_intento_no_reintenta(self):
+		llamadas = []
+
+		def fn(adapter):
+			llamadas.append(1)
+			raise F.LLMProviderError("se cayó")
+
+		with self.assertRaises(F.LLMConfigError):
+			self._con(fn, intentos=1)
+		self.assertEqual(len(llamadas), 1)
+
+	def test_sin_saldo_no_se_reintenta(self):
+		llamadas = []
+
+		def fn(adapter):
+			llamadas.append(1)
+			raise F.LLMProviderError("HTTP 402: Insufficient account funds")
+
+		with self.assertRaises(F.LLMConfigError) as ctx:
+			self._con(fn)
+		self.assertEqual(len(llamadas), 1)
+		self.assertIn("no tiene saldo", str(ctx.exception))
+
+	def test_sin_saldo_sigue_con_el_proveedor_de_clave_propia(self):
+		"""Un 402 en un proveedor no cancela el siguiente de la cadena."""
+		llamadas = []
+
+		def fn(adapter):
+			llamadas.append(adapter.nombre)
+			if adapter.nombre == "Sin saldo":
+				raise F.LLMProviderError("HTTP 402: Insufficient account funds")
+			return "ok", {"entrada": 1, "salida": 2}, 10, 0.0
+
+		cadena = [fila_zen("Sin saldo"), fila_zen("Con clave", rol="Profundo")]
+		with patch.object(F, "intentos_respuesta", return_value=2), \
+			patch.object(F.frappe, "get_cached_doc", return_value=settings_stub()):
+			texto, info = F._con_fallback(cadena, fn)
+		self.assertEqual(texto, "ok")
+		self.assertEqual(llamadas, ["Sin saldo", "Con clave"])
+		self.assertEqual(info["proveedor"], "Con clave")
+
+	def test_tiempo_agotado_no_se_reintenta(self):
+		llamadas = []
+
+		def fn(adapter):
+			llamadas.append(1)
+			raise F.LLMTiempoAgotado("sin tiempo")
+
+		with self.assertRaises(F.LLMTiempoAgotado):
+			self._con(fn)
+		self.assertEqual(len(llamadas), 1)
+
+	def test_intentos_se_leen_de_settings_y_se_acotan(self):
+		for valor, esperado in ((None, 2), (0, 2), (1, 1), (3, 3), (99, 5), (-3, 1)):
+			with self.subTest(valor=valor):
+				stub = frappe._dict({"intentos_respuesta": valor})
+				with patch.object(F.frappe, "get_cached_doc", return_value=stub):
+					self.assertEqual(F.intentos_respuesta(), esperado)
+
+
 class TestPromptSpec(FrappeTestCase):
 	"""El prompt es la única fuente de gramática de filtros y de fechas para el LLM."""
 

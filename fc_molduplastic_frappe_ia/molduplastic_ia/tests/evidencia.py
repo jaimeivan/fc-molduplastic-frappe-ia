@@ -30,7 +30,8 @@ SETTINGS = "Molduplastic IA Settings"
 COLUMNAS = [
 	"origen", "tipo_llm", "caso", "archivo", "pregunta", "modo_configurado", "modo_efectivo",
 	"intencion", "estado", "respuesta", "proveedor", "modelo", "tokens_entrada",
-	"tokens_salida", "latencia_ms", "consultas_complementarias", "latencia_analisis_ms",
+	"tokens_salida", "latencia_ms", "latencia_construccion_ms", "latencia_bd_ms",
+	"latencia_total_ms", "consultas_complementarias", "latencia_analisis_ms",
 	"hallazgos", "analisis_omitido", "verificacion", "preguntas_sugeridas", "nota",
 ]
 
@@ -141,6 +142,7 @@ def _logs_de_la_pregunta(nuevos):
 		filters={"name": ["in", list(nuevos)], "operacion": "explain"},
 		fields=[
 			"estado", "proveedor", "modelo", "tokens_entrada", "tokens_salida", "latencia_ms",
+			"latencia_construccion_ms", "latencia_bd_ms", "latencia_total_ms",
 			"consultas_complementarias", "latencia_analisis_ms", "hallazgos", "analisis_omitido",
 			"modo_respuesta", "intencion", "error", "verificacion",
 		],
@@ -190,6 +192,9 @@ def _ejecutar_caso(caso):
 		tokens_entrada=explain.get("tokens_entrada", 0),
 		tokens_salida=explain.get("tokens_salida", 0),
 		latencia_ms=explain.get("latencia_ms", 0),
+		latencia_construccion_ms=explain.get("latencia_construccion_ms", 0),
+		latencia_bd_ms=explain.get("latencia_bd_ms", 0),
+		latencia_total_ms=explain.get("latencia_total_ms", 0),
 		consultas_complementarias=explain.get("consultas_complementarias", 0),
 		latencia_analisis_ms=explain.get("latencia_analisis_ms", 0),
 		hallazgos=explain.get("hallazgos", ""),
@@ -347,6 +352,14 @@ def _fila_captura(args, kwargs, antes, res, error):
 		fields=["proveedor", "modelo", "tokens_entrada", "tokens_salida", "latencia_ms", "respuesta"],
 		limit=1,
 	) if nuevos else []
+	# Las etapas de la consulta viven en la fila explain del turno, no en la del
+	# consumo (que puede ser generate_spec). Se toma la que tenga el total medido.
+	etapas = frappe.get_all(
+		"IA API Log",
+		filters={"name": ["in", list(nuevos)], "operacion": "explain"},
+		fields=["latencia_construccion_ms", "latencia_bd_ms", "latencia_total_ms"],
+	) if nuevos else []
+	etapas = max(etapas, key=lambda f: f.get("latencia_total_ms") or 0, default={})
 	if _pipeline_simulado():
 		tipo = "simulada"
 	elif consumo:
@@ -370,6 +383,9 @@ def _fila_captura(args, kwargs, antes, res, error):
 		tokens_entrada=c.get("tokens_entrada", 0),
 		tokens_salida=c.get("tokens_salida", 0),
 		latencia_ms=c.get("latencia_ms", 0),
+		latencia_construccion_ms=etapas.get("latencia_construccion_ms", 0),
+		latencia_bd_ms=etapas.get("latencia_bd_ms", 0),
+		latencia_total_ms=etapas.get("latencia_total_ms", 0),
 		nota=error or ("" if tipo != "simulada" else "LLM simulado con mocks"),
 	)
 

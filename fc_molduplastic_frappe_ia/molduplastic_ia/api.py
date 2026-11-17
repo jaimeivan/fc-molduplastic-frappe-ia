@@ -33,6 +33,7 @@ from fc_molduplastic_frappe_ia.molduplastic_ia.permissions import (
 from fc_molduplastic_frappe_ia.molduplastic_ia import hallazgos as _hallazgos
 from fc_molduplastic_frappe_ia.molduplastic_ia import analisis as _calc
 from fc_molduplastic_frappe_ia.molduplastic_ia.analisis import TiempoAgotado, TiempoPrevisto
+from fc_molduplastic_frappe_ia.molduplastic_ia.campos import normalizar_ingreso
 from fc_molduplastic_frappe_ia.molduplastic_ia import playbooks as _playbooks
 from fc_molduplastic_frappe_ia.molduplastic_ia import verificacion as _verificacion
 from fc_molduplastic_frappe_ia.molduplastic_ia.intencion import clasificar
@@ -714,7 +715,7 @@ def _bloque_de_la_pregunta(pregunta):
 	desde, hasta = _rango_de_bloque(anio, indice, meses)
 	if indice == actual and anio == hoy.year and not ordinales:
 		# "Trimestre actual"/"cuatrimestre actual": hasta hoy, como "este mes"
-		# (hay piezas con fechaingreso adelantada que no deben entrar).
+		# (hay piezas con fecha_hora_carga adelantada que no deben entrar).
 		hasta = f"{_dia(hoy)} 23:59:59"
 	return desde, hasta
 
@@ -731,9 +732,9 @@ def _aplicar_periodo(spec, clave, pregunta, desde=None, hasta=None):
 	rango lo fija el servidor (1 de enero → hoy), no el modelo.
 
 	Re-ancla cada `between` de un campo de fecha (global y de cada agregación).
-	Las comparaciones contra un extremo del rango viejo (`fechaingreso < desde`
+	Las comparaciones contra un extremo del rango viejo (`fecha_hora_carga < desde`
 	de las rezagadas) se mueven con él. Si una medida no trae ninguna fecha, se
-	agrega el filtro por defecto del DocType (`fechaingreso` en Pieza,
+	agrega el filtro por defecto del DocType (`fecha_hora_carga` en Pieza,
 	`fecha_inicio` en Recoleccion); en Taller no hay fecha que aplicar. Los
 	listados de campos sin fechas no se acotan (perderían filas del catálogo).
 	"""
@@ -792,7 +793,7 @@ def _aplicar_periodo(spec, clave, pregunta, desde=None, hasta=None):
 				yield agg["filtros"]
 
 	# Extremos viejos: sirven para mover las comparaciones que los referencian
-	# (la rezagada trae `fechaingreso < desde`).
+	# (la rezagada trae `fecha_hora_carga < desde`).
 	inicios, fines = set(), set()
 	for filtros in fuentes():
 		for campo in CAMPOS_DE_FECHA:
@@ -838,7 +839,7 @@ def _aplicar_periodo(spec, clave, pregunta, desde=None, hasta=None):
 		# Solo las medidas se acotan por defecto: un listado de campos (catálogo
 		# de plazas, talleres...) no debe perder filas por no tener piezas en el
 		# período, y además el prompt ya pide un período en toda consulta.
-		campo = {"Pieza": "fechaingreso", "Recoleccion": "fecha_inicio"}.get(
+		campo = {"Pieza": "fecha_hora_carga", "Recoleccion": "fecha_inicio"}.get(
 			spec.get("doctype") or "Pieza"
 		)
 		if campo:
@@ -904,12 +905,11 @@ def _texto_periodo_dos_meses():
 
 
 CAMPOS_DE_FECHA = (
-	"fechaingreso",
+	"fecha_hora_carga",
 	"fecha_hora_recoleccion",
 	"fecha_inicio",
 	"fecha_completado",
 	"fechaentrega",
-	"fecha_hora_carga",
 )
 
 
@@ -1080,7 +1080,7 @@ def _son_sumas(aggs):
 def _periodo_efectividad(spec):
 	"""Desde/hasta del período que mide la efectividad, o None si no se puede.
 
-	El período canónico va sobre `fechaingreso` en "filters" global. Sin filtro
+	El período canónico va sobre `fecha_hora_carga` en "filters" global. Sin filtro
 	se usa el mes en curso, que es el default del prompt.
 	"""
 	filtros = spec.get("filters")
@@ -1088,7 +1088,7 @@ def _periodo_efectividad(spec):
 		filtros = {}
 	if not isinstance(filtros, dict):
 		return None
-	f = filtros.get("fechaingreso")
+	f = filtros.get("fecha_hora_carga")
 	if f is None:
 		# El modelo a veces pone el período sobre fecha_hora_recoleccion ("más se
 		# recolectan en septiembre"): es el mismo período de la pregunta.
@@ -1118,12 +1118,12 @@ def _aggs_recolectadas(desde, hasta):
 			"field": "*",
 			"alias": "recolectadas",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
+				"fecha_hora_carga": ["between", desde, hasta],
 				"id_estatus": ["=", 100],
 				"recolectable": ["=", 1],
 				"fecha_hora_recoleccion": [
-					["mes_igual", {"campo": "fechaingreso"}],
-					[">=", {"campo": "fechaingreso"}],
+					["mes_igual", {"campo": "fecha_hora_carga"}],
+					[">=", {"campo": "fecha_hora_carga"}],
 				],
 			},
 		},
@@ -1132,10 +1132,10 @@ def _aggs_recolectadas(desde, hasta):
 			"field": "*",
 			"alias": "recolectadas_inconsistentes",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
+				"fecha_hora_carga": ["between", desde, hasta],
 				"id_estatus": ["=", 100],
 				"recolectable": ["=", 1],
-				"fecha_hora_recoleccion": ["<", {"campo": "fechaingreso"}],
+				"fecha_hora_recoleccion": ["<", {"campo": "fecha_hora_carga"}],
 			},
 		},
 		{
@@ -1144,7 +1144,7 @@ def _aggs_recolectadas(desde, hasta):
 			"alias": "recolectadas_periodo",
 			"filtros": {
 				"fecha_hora_recoleccion": ["between", desde, hasta],
-				"fechaingreso": ["<", desde],
+				"fecha_hora_carga": ["<", desde],
 				"id_estatus": ["=", 100],
 				"recolectable": ["=", 1],
 			},
@@ -1160,7 +1160,7 @@ def _aggs_efectividad(desde, hasta):
 			"field": "*",
 			"alias": "total",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
+				"fecha_hora_carga": ["between", desde, hasta],
 				"recolectable": ["=", 1],
 			},
 		},
@@ -1331,7 +1331,7 @@ def _completar_mezcla_volumen_efectividad(spec, pregunta):
 		desde, hasta = _periodo_anio_actual()
 		spec["aggregations"] = _aggs_efectividad(desde, hasta)
 		filtros = dict(spec.get("filters") or {})
-		for campo in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
+		for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
 			filtros.pop(campo, None)
 		spec["filters"] = filtros
 	return spec
@@ -1402,7 +1402,7 @@ def _completar_efectividad(spec, pregunta):
 	"""Fuerza las cuatro cifras de la efectividad cuando la pregunta la mide.
 
 	El modelo devuelve a veces solo "total" y "recolectadas", o pierde la
-	condición ">= fechaingreso": el porcentaje sale más bajo que la definición
+	condición ">= fecha_hora_carga": el porcentaje sale más bajo que la definición
 	del dueño y el número parece válido. Las cuatro categorías son una
 	definición del negocio, no una decisión del modelo, así que cuando el spec
 	mide efectividad (la pregunta la pide, o el spec trae "min_ingresadas") se
@@ -1435,7 +1435,7 @@ def _completar_efectividad(spec, pregunta):
 	# recolectadas mezcla las bases de fecha y un filtro global de fecha
 	# acotaría la consulta de recolección.
 	filtros = dict(spec.get("filters") or {})
-	filtros.pop("fechaingreso", None)
+	filtros.pop("fecha_hora_carga", None)
 	# El modelo mete el período de "recolectadas" y el estatus 100 en el WHERE
 	# global cuando la frase habla de recolección; la fórmula ya los lleva dentro
 	# de cada agregación y en el universo solo dejan cifras vacías.
@@ -1535,7 +1535,7 @@ def _completar_recolectadas(spec, pregunta):
 	# devolvía el total del universo. Las fechas, el estatus y el recolectable
 	# los pone cada categoría de la unión.
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
 		filtros.pop(campo, None)
 	spec["filters"] = filtros
 	spec["fields"] = []
@@ -1581,11 +1581,11 @@ def _periodo_del_spec(spec):
 	"""Período explícito del spec (global o en la primera agregación), o None."""
 	filtros = spec.get("filters")
 	if isinstance(filtros, dict):
-		f = filtros.get("fechaingreso")
+		f = filtros.get("fecha_hora_carga")
 		if isinstance(f, list) and len(f) == 3 and str(f[0]).lower() == "between":
 			return f[1], f[2]
 	for agg in spec.get("aggregations") or []:
-		f = (agg.get("filtros") or {}).get("fechaingreso")
+		f = (agg.get("filtros") or {}).get("fecha_hora_carga")
 		if isinstance(f, list) and len(f) == 3 and str(f[0]).lower() == "between":
 			return f[1], f[2]
 	return None
@@ -1596,7 +1596,7 @@ def _periodo_de_recoleccion(spec):
 
 	"¿cuántas piezas se recolectaron en septiembre?" pone el `between` sobre
 	`fecha_hora_recoleccion` (es el campo que mide la recolección), y
-	`_periodo_del_spec` solo mira `fechaingreso`: sin esto el conteo caía al mes
+	`_periodo_del_spec` solo mira `fecha_hora_carga`: sin esto el conteo caía al mes
 	en curso y devolvía las piezas de octubre.
 	"""
 	fuentes = []
@@ -1632,7 +1632,7 @@ def _aggs_resumen(desde, hasta):
 			"field": "*",
 			"alias": "total",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
+				"fecha_hora_carga": ["between", desde, hasta],
 				"recolectable": ["=", 1],
 			},
 		},
@@ -1642,9 +1642,9 @@ def _aggs_resumen(desde, hasta):
 			"field": "*",
 			"alias": "no_recolectadas",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
+				"fecha_hora_carga": ["between", desde, hasta],
 				"recolectable": ["=", 1],
-				"fecha_hora_recoleccion": [">=", {"campo": "fechaingreso"}],
+				"fecha_hora_recoleccion": [">=", {"campo": "fecha_hora_carga"}],
 				"id_estatus": ["in", list(estatus_no)],
 			},
 		},
@@ -1653,7 +1653,7 @@ def _aggs_resumen(desde, hasta):
 			"field": "*",
 			"alias": "pendientes",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
+				"fecha_hora_carga": ["between", desde, hasta],
 				"id_estatus": ["is", "null"],
 				"fecha_hora_recoleccion": ["is", "null"],
 				"recolectable": ["=", 1],
@@ -1664,8 +1664,8 @@ def _aggs_resumen(desde, hasta):
 			"field": "*",
 			"alias": "inconsistentes_recolectadas",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
-				"fecha_hora_recoleccion": ["<", {"campo": "fechaingreso"}],
+				"fecha_hora_carga": ["between", desde, hasta],
+				"fecha_hora_recoleccion": ["<", {"campo": "fecha_hora_carga"}],
 				"id_estatus": ["=", 100],
 			},
 		},
@@ -1674,8 +1674,8 @@ def _aggs_resumen(desde, hasta):
 			"field": "*",
 			"alias": "inconsistentes_no_recolectadas",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
-				"fecha_hora_recoleccion": ["<", {"campo": "fechaingreso"}],
+				"fecha_hora_carga": ["between", desde, hasta],
+				"fecha_hora_recoleccion": ["<", {"campo": "fecha_hora_carga"}],
 				"id_estatus": ["in", list(estatus_no)],
 			},
 		},
@@ -1685,7 +1685,7 @@ def _aggs_resumen(desde, hasta):
 			"alias": "rezagadas_recolectadas",
 			"filtros": {
 				"fecha_hora_recoleccion": ["between", desde, hasta],
-				"fechaingreso": ["<", desde],
+				"fecha_hora_carga": ["<", desde],
 				"id_estatus": ["=", 100],
 			},
 		},
@@ -1695,7 +1695,7 @@ def _aggs_resumen(desde, hasta):
 			"alias": "rezagadas_no_recolectadas",
 			"filtros": {
 				"fecha_hora_recoleccion": ["between", desde, hasta],
-				"fechaingreso": ["<", desde],
+				"fecha_hora_carga": ["<", desde],
 				"id_estatus": ["in", list(estatus_no)],
 			},
 		},
@@ -1734,9 +1734,9 @@ def _aggs_no_recuperadas(desde, hasta):
 			"field": "*",
 			"alias": "no_recolectadas",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
+				"fecha_hora_carga": ["between", desde, hasta],
 				"recolectable": ["=", 1],
-				"fecha_hora_recoleccion": [">=", {"campo": "fechaingreso"}],
+				"fecha_hora_recoleccion": [">=", {"campo": "fecha_hora_carga"}],
 				"id_estatus": ["in", list(estatus)],
 			},
 		},
@@ -1745,8 +1745,8 @@ def _aggs_no_recuperadas(desde, hasta):
 			"field": "*",
 			"alias": "inconsistentes_no_recolectadas",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
-				"fecha_hora_recoleccion": ["<", {"campo": "fechaingreso"}],
+				"fecha_hora_carga": ["between", desde, hasta],
+				"fecha_hora_recoleccion": ["<", {"campo": "fecha_hora_carga"}],
 				"id_estatus": ["in", list(estatus)],
 			},
 		},
@@ -1756,7 +1756,7 @@ def _aggs_no_recuperadas(desde, hasta):
 			"alias": "rezagadas_no_recolectadas",
 			"filtros": {
 				"fecha_hora_recoleccion": ["between", desde, hasta],
-				"fechaingreso": ["<", desde],
+				"fecha_hora_carga": ["<", desde],
 				"id_estatus": ["in", list(estatus)],
 			},
 		},
@@ -1829,7 +1829,7 @@ def _completar_porcentaje_de_categorias(spec, pregunta):
 			"field": "*",
 			"alias": "ingresadas",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
+				"fecha_hora_carga": ["between", desde, hasta],
 				"recolectable": ["=", 1],
 			},
 		}
@@ -1845,7 +1845,7 @@ def _completar_porcentaje_de_categorias(spec, pregunta):
 				"field": "*",
 				"alias": "no_entregadas",
 				"filtros": {
-					"fechaingreso": ["between", desde, hasta],
+					"fecha_hora_carga": ["between", desde, hasta],
 					"recolectable": ["=", 1],
 					"id_estatus": ["in", [200, 201, 202, 203, 204, 205, 206]],
 				},
@@ -1858,7 +1858,7 @@ def _completar_porcentaje_de_categorias(spec, pregunta):
 				"field": "*",
 				"alias": "pendientes",
 				"filtros": {
-					"fechaingreso": ["between", desde, hasta],
+					"fecha_hora_carga": ["between", desde, hasta],
 					"id_estatus": ["is", "empty"],
 					"fecha_hora_recoleccion": ["is", "empty"],
 					"recolectable": ["=", 1],
@@ -2035,7 +2035,7 @@ def _completar_no_localizadas(spec, pregunta):
 		spec["group_by"] = [dimension]
 	elif not spec.get("group_by"):
 		spec["group_by"] = []
-	spec["filters"] = {"fechaingreso": ["between", desde, hasta]}
+	spec["filters"] = {"fecha_hora_carga": ["between", desde, hasta]}
 	spec["fields"] = []
 	spec["aggregations"] = [
 		{
@@ -2081,7 +2081,7 @@ def _completar_siniestros_pendientes(spec, pregunta):
 	if spec.get("doctype") not in (None, "Pieza"):
 		return spec
 	rango = (_rango_del_spec(spec) if _trae_periodo(pregunta) else None) or _periodo_mes_actual()
-	spec["filters"] = {"fechaingreso": ["between", rango[0], rango[1]]}
+	spec["filters"] = {"fecha_hora_carga": ["between", rango[0], rango[1]]}
 	spec["fields"] = []
 	spec["group_by"] = ["siniestro"]
 	spec["aggregations"] = [
@@ -2130,7 +2130,7 @@ def _completar_siniestros_por_cdr(spec, pregunta):
 	rango = rango or _periodo_mes_actual()
 	spec.pop("out_of_scope", None)
 	spec["doctype"] = "Pieza"
-	spec["filters"] = {"fechaingreso": ["between", rango[0], rango[1]]}
+	spec["filters"] = {"fecha_hora_carga": ["between", rango[0], rango[1]]}
 	spec["fields"] = []
 	spec["group_by"] = ["taller_asignado"]
 	spec["aggregations"] = [
@@ -2188,9 +2188,9 @@ def _completar_piezas_caras(spec, pregunta):
 		return spec
 	rango = _periodo_del_spec(spec) or _periodo_mes_actual()
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "id_estatus", "recolectable"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "id_estatus", "recolectable"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", rango[0], rango[1]]
+	filtros["fecha_hora_carga"] = ["between", rango[0], rango[1]]
 	filtros["recolectable"] = ["=", 1]
 	spec["filters"] = filtros
 	spec["fields"] = list(COLUMNAS_PRIORIDAD)
@@ -2315,9 +2315,9 @@ def _completar_piezas_con_precio(spec, pregunta):
 		return spec
 	desde, hasta = _periodo_del_spec(spec) or _periodo_mes_actual()
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "id_estatus", "recolectable"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "id_estatus", "recolectable"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", desde, hasta]
+	filtros["fecha_hora_carga"] = ["between", desde, hasta]
 	filtros["recolectable"] = ["=", 1]
 	spec["filters"] = filtros
 	spec["fields"] = list(COLUMNAS_PRIORIDAD)
@@ -2339,9 +2339,9 @@ def _completar_solo_precios(spec, pregunta):
 		return spec
 	desde, hasta = _periodo_del_spec(spec) or _periodo_mes_actual()
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "id_estatus", "recolectable"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "id_estatus", "recolectable"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", desde, hasta]
+	filtros["fecha_hora_carga"] = ["between", desde, hasta]
 	filtros["recolectable"] = ["=", 1]
 	spec["filters"] = filtros
 	spec["fields"] = []
@@ -2438,7 +2438,7 @@ def _completar_prioridad_pendientes(spec, pregunta):
 	# Sin período se usa el mes en curso (2026-11-03). Con período en la frase,
 	# ese manda.
 	rango = rango or _periodo_mes_actual()
-	spec["filters"]["fechaingreso"] = ["between", rango[0], rango[1]]
+	spec["filters"]["fecha_hora_carga"] = ["between", rango[0], rango[1]]
 	spec["order_by"] = [{"field": "preciovale", "dir": "desc"}]
 	spec["limit"] = 10
 	spec.pop("render_chart", None)
@@ -2457,7 +2457,7 @@ def _completar_submarcas_danadas(spec, pregunta):
 	"""“¿Qué submarcas generan más piezas dañadas?” = piezas ingresadas por submarca.
 
 	El dueño lo pidió el 2026-11-03: "dañadas" es la pieza que ingresó al taller,
-	así que la medida es el conteo de ingresadas (fechaingreso en el período +
+	así que la medida es el conteo de ingresadas (fecha_hora_carga en el período +
 	recolectable = 1) agrupado por `tipo` (la submarca), de mayor a menor.
 	"""
 	if not isinstance(spec, dict) or spec.get("out_of_scope") or spec.get("respuesta_directa"):
@@ -2467,7 +2467,7 @@ def _completar_submarcas_danadas(spec, pregunta):
 	if spec.get("doctype") not in (None, "Pieza"):
 		return spec
 	desde, hasta = _periodo_del_spec(spec) or _periodo_mes_actual()
-	spec["filters"] = {"fechaingreso": ["between", desde, hasta]}
+	spec["filters"] = {"fecha_hora_carga": ["between", desde, hasta]}
 	spec["fields"] = []
 	spec["group_by"] = ["tipo"]
 	spec["aggregations"] = [
@@ -2519,9 +2519,9 @@ def _completar_promedio_siniestros_taller(spec, pregunta):
 	filtros = {
 		campo: valor
 		for campo, valor in (spec.get("filters") or {}).items()
-		if campo not in ("fechaingreso", "fecha_hora_recoleccion", "id_estatus", "recolectable")
+		if campo not in ("fecha_hora_carga", "fecha_hora_recoleccion", "id_estatus", "recolectable")
 	}
-	filtros["fechaingreso"] = ["between", desde, hasta]
+	filtros["fecha_hora_carga"] = ["between", desde, hasta]
 	filtros["recolectable"] = ["=", 1]
 	spec["filters"] = filtros
 	spec["fields"] = []
@@ -2700,9 +2700,9 @@ def _completar_promedio_siniestro(spec, pregunta):
 	# Los filtros propios de la pregunta (marca, submarca, taller...) se
 	# conservan; solo se reemplaza la fecha y se quitan los del DocType.
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", desde, hasta]
+	filtros["fecha_hora_carga"] = ["between", desde, hasta]
 	# recolectable va GLOBAL: dentro de un count_distinct el filtro por agregación
 	# se traduce a COUNT(CASE ... THEN DISTINCT ...), que MySQL no acepta.
 	filtros["recolectable"] = ["=", 1]
@@ -2834,9 +2834,9 @@ def _completar_promedios(spec, pregunta):
 		es_precio = True
 	desde, hasta = _periodo_del_spec(spec) or _periodo_mes_actual()
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", desde, hasta]
+	filtros["fecha_hora_carga"] = ["between", desde, hasta]
 	filtros["recolectable"] = ["=", 1]
 	spec["filters"] = filtros
 	spec["fields"] = []
@@ -3094,9 +3094,9 @@ def _completar_marcas_accidentadas(spec, pregunta):
 	desde, hasta = _periodo_del_spec(spec) or _periodo_mes_actual()
 	dimension = _dimension_de_marca(pregunta)
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", desde, hasta]
+	filtros["fecha_hora_carga"] = ["between", desde, hasta]
 	filtros["recolectable"] = ["=", 1]
 	spec["filters"] = filtros
 	spec["fields"] = []
@@ -3236,7 +3236,7 @@ def _completar_pais_origen(spec, pregunta):
 	# Las marcas que no están en el maestro no tienen país: un "sin origen" no
 	# es un país de origen, así que no entra al ranking.
 	spec["filters"] = {
-		"fechaingreso": ["between", desde, hasta],
+		"fecha_hora_carga": ["between", desde, hasta],
 		"pais_origen": ["is", "not null"],
 	}
 	spec["fields"] = []
@@ -3259,7 +3259,7 @@ def _completar_crecimiento_siniestros(spec, pregunta):
 	"""“¿Cómo ha crecido el número de siniestros?” = serie mensual + variación.
 
 	El dueño lo pidió el 2026-11-03. El mes sale del campo virtual `mes`
-	(YYYY-MM de fechaingreso) y la medida son los siniestros distintos; la
+	(YYYY-MM de fecha_hora_carga) y la medida son los siniestros distintos; la
 	variación la calcula el código (`_serie_con_variacion`). Sin período se usa
 	lo que va del año, que es lo que hace visible una tendencia.
 	"""
@@ -3276,9 +3276,9 @@ def _completar_crecimiento_siniestros(spec, pregunta):
 		rango = (_rango_del_spec(spec) if _trae_periodo(pregunta) else None) or _periodo_anio_actual()
 	# Los filtros que nombra la pregunta (marca, país, taller…) se conservan.
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", rango[0], rango[1]]
+	filtros["fecha_hora_carga"] = ["between", rango[0], rango[1]]
 	pais = _pais_de_la_pregunta(pregunta)
 	if pais:
 		# El país lo detecta el servidor: no depende de que el modelo lo filtre.
@@ -3295,7 +3295,7 @@ def _completar_crecimiento_siniestros(spec, pregunta):
 		# ranking no se trunque (marcas × meses se pasa del límite del SQL) y la
 		# variación sale de la serie que devuelve la base.
 		desde, hasta = _periodo_ultimos_dos_meses()
-		filtros["fechaingreso"] = ["between", desde, hasta]
+		filtros["fecha_hora_carga"] = ["between", desde, hasta]
 		spec["filters"] = filtros
 		spec["group_by"] = [dimension, "mes"]
 		spec["order_by"] = [{"field": "mes", "dir": "asc"}]
@@ -3439,9 +3439,9 @@ def _completar_crecimiento_dimension(spec, pregunta):
 	desde = _rango_de_bloque(*bloques[0], meses)[0]
 	hasta = _rango_de_bloque(*bloques[1], meses)[1]
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", desde, hasta]
+	filtros["fecha_hora_carga"] = ["between", desde, hasta]
 	spec["filters"] = filtros
 	spec["fields"] = []
 	spec["group_by"] = [dimension, "mes"]
@@ -3461,7 +3461,7 @@ def _completar_crecimiento_dimension(spec, pregunta):
 				"field": "*",
 				"alias": "pendientes",
 				"filtros": {
-					"fechaingreso": ["between", desde, hasta],
+					"fecha_hora_carga": ["between", desde, hasta],
 					"id_estatus": ["is", "empty"],
 					"fecha_hora_recoleccion": ["is", "empty"],
 					"recolectable": ["=", 1],
@@ -3657,7 +3657,7 @@ def _etiqueta_de_bloque(anio, indice, meses):
 def _completar_crecimiento_periodos(spec, pregunta):
 	"""Serie por mes/trimestre/cuatrimestre con su variación (dueño, 2026-11-07).
 
-	Se consulta la serie **mensual** (campo virtual `mes` de `fechaingreso`) y el
+	Se consulta la serie **mensual** (campo virtual `mes` de `fecha_hora_carga`) y el
 	código la agrupa en trimestres o cuatrimestres (`_serie_por_bloque`): una
 	sola consulta sirve para las tres granularidades. Sin período se usa lo que
 	va del año, que es lo que hace visible una tendencia.
@@ -3679,9 +3679,9 @@ def _completar_crecimiento_periodos(spec, pregunta):
 			or _periodo_anio_actual()
 		)
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", rango[0], rango[1]]
+	filtros["fecha_hora_carga"] = ["between", rango[0], rango[1]]
 	spec["filters"] = filtros
 	spec["fields"] = []
 	spec["group_by"] = ["mes"]
@@ -3702,7 +3702,7 @@ def _completar_crecimiento_periodos(spec, pregunta):
 				"field": "*",
 				"alias": "pendientes",
 				"filtros": {
-					"fechaingreso": ["between", rango[0], rango[1]],
+					"fecha_hora_carga": ["between", rango[0], rango[1]],
 					"id_estatus": ["is", "empty"],
 					"fecha_hora_recoleccion": ["is", "empty"],
 					"recolectable": ["=", 1],
@@ -3885,9 +3885,9 @@ def _completar_anios_modelo(spec, pregunta):
 		return spec
 	desde, hasta = _periodo_del_spec(spec) or _periodo_mes_actual()
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", desde, hasta]
+	filtros["fecha_hora_carga"] = ["between", desde, hasta]
 	filtros["modelo"] = ["is", "not null"]
 	spec["filters"] = filtros
 	spec["fields"] = []
@@ -3932,7 +3932,7 @@ def _completar_preferencia_region(spec, pregunta):
 	desde, hasta = _periodo_del_spec(spec) or _periodo_mes_actual()
 	texto = _sin_acentos(pregunta)
 	dimension = "tipo" if "submarca" in texto else "marca"
-	spec["filters"] = {"fechaingreso": ["between", desde, hasta]}
+	spec["filters"] = {"fecha_hora_carga": ["between", desde, hasta]}
 	spec["fields"] = []
 	spec["group_by"] = ["region_pais", dimension]
 	spec["aggregations"] = _aggs_recolectadas(desde, hasta)
@@ -4363,9 +4363,9 @@ def _completar_parte(spec, pregunta):
 		# delantera/trasera/lado ("FACIA DEL.", "FARO I.CPL.").
 		filtros.pop("parte_pieza", None)
 		filtros["piezades"] = ["like", _patron_piezades(valor, pregunta)]
-		filtros.pop("fechaingreso", None)
+		filtros.pop("fecha_hora_carga", None)
 		periodo = _periodo_del_spec(spec) or _periodo_mes_actual()
-		filtros["fechaingreso"] = ["between", periodo[0], periodo[1]]
+		filtros["fecha_hora_carga"] = ["between", periodo[0], periodo[1]]
 	spec["filters"] = filtros
 	if not es_union:
 		spec["fields"] = []
@@ -4584,7 +4584,7 @@ def _completar_filtro_danadas(spec, pregunta):
 		return spec
 	desde, hasta = _periodo_del_spec(spec) or _periodo_mes_actual()
 	filtros = dict(spec.get("filters") or {})
-	filtros.setdefault("fechaingreso", ["between", desde, hasta])
+	filtros.setdefault("fecha_hora_carga", ["between", desde, hasta])
 	spec["filters"] = filtros
 	spec["fields"] = []
 	spec["aggregations"] = [
@@ -5189,7 +5189,7 @@ def _aggs_de_medida(medida, desde, hasta):
 	"""Agregaciones de una medida de la comparación, con su período adentro."""
 	if medida == "recolectadas":
 		return _aggs_recolectadas(desde, hasta)
-	filtros = {"fechaingreso": ["between", desde, hasta], "recolectable": ["=", 1]}
+	filtros = {"fecha_hora_carga": ["between", desde, hasta], "recolectable": ["=", 1]}
 	if medida == "pendientes":
 		filtros.update({"id_estatus": ["is", "empty"], "fecha_hora_recoleccion": ["is", "empty"]})
 	elif medida == "no_localizadas":
@@ -5228,7 +5228,7 @@ def _completar_comparacion(spec, pregunta):
 		# (a) Dos valores de la misma dimensión.
 		campo = izq[1]
 		filtros = dict(spec.get("filters") or {})
-		for clave in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus", campo):
+		for clave in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus", campo):
 			filtros.pop(clave, None)
 		valores_lado = []
 		for lado in (izq, der):
@@ -5253,7 +5253,7 @@ def _completar_comparacion(spec, pregunta):
 	if efectividad and izq[0] == "medida":
 		return spec
 	filtros = dict(spec.get("filters") or {})
-	for clave in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
+	for clave in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
 		filtros.pop(clave, None)
 	spec["filters"] = filtros
 	spec["group_by"] = []
@@ -5326,7 +5326,7 @@ def _spec_sin_modelo(pregunta):
 	return {
 		"doctype": "Pieza",
 		"fields": [],
-		"filters": {"fechaingreso": ["between", desde, hasta]},
+		"filters": {"fecha_hora_carga": ["between", desde, hasta]},
 		"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 		"group_by": [],
 		"order_by": [],
@@ -5350,7 +5350,7 @@ def _spec_de_comparacion(pregunta):
 	return {
 		"doctype": "Pieza",
 		"fields": [],
-		"filters": {"fechaingreso": ["between", desde, hasta]},
+		"filters": {"fecha_hora_carga": ["between", desde, hasta]},
 		"aggregations": [{"func": "count", "field": "*", "alias": "piezas"}],
 		"group_by": [],
 		"order_by": [],
@@ -5517,9 +5517,9 @@ def _completar_tabla_comparativa(spec, pregunta):
 	dimensiones = _dimensiones_para_cruce(pregunta)[:2]
 	desde, hasta = _periodo_del_spec(spec) or _periodo_mes_actual()
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "recolectable", "id_estatus"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", desde, hasta]
+	filtros["fecha_hora_carga"] = ["between", desde, hasta]
 	spec["filters"] = filtros
 	spec["fields"] = []
 	spec["group_by"] = dimensiones
@@ -5935,7 +5935,7 @@ def _completar_piezas_mas_danadas(spec, pregunta):
 	if spec.get("doctype") not in (None, "Pieza"):
 		return spec
 	desde, hasta = _periodo_del_spec(spec) or _periodo_mes_actual()
-	spec["filters"] = {"fechaingreso": ["between", desde, hasta]}
+	spec["filters"] = {"fecha_hora_carga": ["between", desde, hasta]}
 	spec["fields"] = []
 	spec["group_by"] = ["parte_pieza"]
 	spec["aggregations"] = [
@@ -6037,14 +6037,14 @@ def _completar_ficha_taller(spec, pregunta):
 	filtros["taller_asignado"] = ["=", taller]
 	# El período y `recolectable` van globales: `count_distinct` no admite
 	# filtro por agregación (MySQL rechaza `COUNT(DISTINCT CASE …)`).
-	filtros["fechaingreso"] = ["between", desde, hasta]
+	filtros["fecha_hora_carga"] = ["between", desde, hasta]
 	filtros["recolectable"] = ["=", 1]
 	aggs = [
 		{
 			"func": "count",
 			"field": "*",
 			"alias": "ingresadas",
-			"filtros": {"fechaingreso": ["between", desde, hasta], "recolectable": ["=", 1]},
+			"filtros": {"fecha_hora_carga": ["between", desde, hasta], "recolectable": ["=", 1]},
 		},
 		*_aggs_recolectadas(desde, hasta),
 		{
@@ -6055,7 +6055,7 @@ def _completar_ficha_taller(spec, pregunta):
 			"field": "*",
 			"alias": "no_recolectadas",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
+				"fecha_hora_carga": ["between", desde, hasta],
 				"recolectable": ["=", 1],
 				"id_estatus": ["in", [200, 201, 202, 203, 204, 205, 206]],
 			},
@@ -6065,7 +6065,7 @@ def _completar_ficha_taller(spec, pregunta):
 			"field": "*",
 			"alias": "pendientes",
 			"filtros": {
-				"fechaingreso": ["between", desde, hasta],
+				"fecha_hora_carga": ["between", desde, hasta],
 				"id_estatus": ["is", "empty"],
 				"fecha_hora_recoleccion": ["is", "empty"],
 				"recolectable": ["=", 1],
@@ -6346,9 +6346,9 @@ def _completar_lista_explicita(spec, pregunta):
 		return spec
 	desde, hasta = _periodo_del_spec(spec) or _periodo_mes_actual()
 	filtros = dict(spec.get("filters") or {})
-	for campo in ("fechaingreso", "fecha_hora_recoleccion", "id_estatus", "recolectable"):
+	for campo in ("fecha_hora_carga", "fecha_hora_recoleccion", "id_estatus", "recolectable"):
 		filtros.pop(campo, None)
-	filtros["fechaingreso"] = ["between", desde, hasta]
+	filtros["fecha_hora_carga"] = ["between", desde, hasta]
 	filtros["recolectable"] = ["=", 1]
 	spec["filters"] = filtros
 	if "siniestro" in texto:
@@ -6523,6 +6523,11 @@ def _log_llamada(
 			"tokens_entrada": info.get("tokens_entrada") or 0,
 			"tokens_salida": info.get("tokens_salida") or 0,
 			"latencia_ms": info.get("latencia_ms") or 0,
+			"latencia_construccion_ms": info.get("latencia_construccion_ms") or 0,
+			"latencia_bd_ms": info.get("latencia_bd_ms") or 0,
+			"latencia_total_ms": info.get("latencia_total_ms") or 0,
+			"motivo_consulta": info.get("motivo_consulta") or "",
+			"consulta_spec": info.get("consulta_spec") or "",
 			"costo_estimado_usd": info.get("costo_estimado_usd") or 0,
 			"error": error,
 			# Modo efectivo: el del explain cuando lo hubo; "Código" cuando la
@@ -6701,7 +6706,7 @@ def _modo_de_respuesta(intencion):
 	return s.modo_respuesta if s.modo_respuesta in MODOS_RESPUESTA else "Breve"
 
 
-# El proxy corta a los 120 s. La respuesta breve de respaldo necesita su propia
+# El proxy corta a los 240 s. La respuesta breve de respaldo necesita su propia
 # llamada al modelo: el análisis deja este margen libre.
 RESERVA_RESPALDO_SEG = 35
 NOTA_TIEMPO_PREVISTO = (
@@ -6726,7 +6731,40 @@ NOTA_SIN_TIEMPO = (
 def _presupuesto_analisis_seg():
 	"""Segundos totales para la respuesta analítica, desde que llega la pregunta."""
 	s = frappe.get_cached_doc("Molduplastic IA Settings")
-	return min(max(int(s.presupuesto_analisis_seg or 120), 5), 120)
+	return min(max(int(s.presupuesto_analisis_seg or 240), 5), 240)
+
+
+# Etapas genéricas que el chat muestra mientras espera (dueño, 2026-11-12).
+# El texto es fijo por etapa: el chat no adivina ni muestra detalles internos.
+ETAPAS_PROGRESO = {
+	"pregunta": "Analizando la pregunta…",
+	"consulta": "Construyendo la consulta…",
+	"datos": "Consultando la información…",
+	"analisis": "Analizando la respuesta…",
+	"respuesta": "Construyendo la respuesta…",
+}
+PROGRESO_TTL_SEG = 900
+
+
+def _clave_progreso(consulta_id):
+	return f"molduplastic_ia:progreso:{consulta_id}"
+
+
+def _marcar_progreso(consulta_id, etapa):
+	"""Guarda la etapa en curso para que el chat la muestre.
+
+	Un fallo de la caché no puede tumbar la pregunta: el avance es informativo.
+	"""
+	if not consulta_id:
+		return
+	try:
+		frappe.cache().set_value(
+			_clave_progreso(consulta_id),
+			{"etapa": etapa, "texto": ETAPAS_PROGRESO.get(etapa, ""), "ts": time.time()},
+			expires_in_sec=PROGRESO_TTL_SEG,
+		)
+	except Exception:
+		pass
 
 
 class _Presupuesto:
@@ -6783,6 +6821,35 @@ def _ejecutar_medido(spec, user, alcance, presupuesto):
 	return presupuesto.medir(lambda: ejecutar(spec, user, alcance=alcance))
 
 
+def _ejecutar_complementaria(
+	spec, user, alcance, presupuesto, consultas, registro=None, motivo=""
+):
+	"""Ejecuta una consulta derivada del análisis y la deja registrada.
+
+	Cada consulta complementaria deja su propia fila en `IA API Log`
+	(`operacion = "complementary"`) con su tiempo de BD y su spec. El agregado
+	del turno sigue quedando en la fila `explain` (`consultas_complementarias`
+	y `latencia_analisis_ms`). Un fallo del registro no tumba el análisis.
+	"""
+	inicio = time.perf_counter()
+	error = ""
+	try:
+		return _ejecutar_medido(spec, user, alcance, presupuesto)
+	except Exception as e:  # noqa: BLE001 - se registra y se vuelve a lanzar
+		error = str(e) or type(e).__name__
+		raise
+	finally:
+		consultas.append(spec)
+		if registro:
+			try:
+				registro(motivo, spec, int((time.perf_counter() - inicio) * 1000), error)
+			except Exception:
+				frappe.log_error(
+					title="IA: log de consulta complementaria",
+					message=frappe.get_traceback(),
+				)
+
+
 def _inicio_de_datos(universo):
 	"""Primer día con piezas en el alcance (None si no se conoce)."""
 	texto = (periodo_datos(universo) or {}).get("desde")
@@ -6808,7 +6875,9 @@ def _filtros_sin_fecha(spec):
 	}
 
 
-def _medir_efectividad(filtros, rango, user, alcance, deadline, consultas):
+def _medir_efectividad(
+	filtros, rango, user, alcance, deadline, consultas, registro=None, motivo="efectividad"
+):
 	"""Ingresadas, recolectadas y efectividad de un período, sin agrupar.
 
 	Usa las mismas agregaciones que la efectividad principal: el total de la
@@ -6826,8 +6895,9 @@ def _medir_efectividad(filtros, rango, user, alcance, deadline, consultas):
 		"render_chart": None,
 		"out_of_scope": False,
 	})
-	resultado = _ejecutar_medido(spec, user, alcance, deadline)
-	consultas.append(spec)
+	resultado = _ejecutar_complementaria(
+		spec, user, alcance, deadline, consultas, registro=registro, motivo=motivo
+	)
 	filas = _porcentajes(spec, resultado)
 	if not filas:
 		return {"ingresadas": 0, "recolectadas": 0, "pct": None}
@@ -6835,7 +6905,9 @@ def _medir_efectividad(filtros, rango, user, alcance, deadline, consultas):
 	return {"ingresadas": fila["total"], "recolectadas": fila["recuperadas"], "pct": fila["pct"]}
 
 
-def _medir_grupos_efectividad(filtros, rango, dims, user, alcance, deadline, consultas):
+def _medir_grupos_efectividad(
+	filtros, rango, dims, user, alcance, deadline, consultas, registro=None
+):
 	"""Efectividad por grupo sobre TODOS los grupos del período (sin el top ni el corte).
 
 	La consulta principal puede venir truncada (top N, min_ingresadas, limit): los
@@ -6853,8 +6925,10 @@ def _medir_grupos_efectividad(filtros, rango, dims, user, alcance, deadline, con
 		"render_chart": None,
 		"out_of_scope": False,
 	})
-	resultado = _ejecutar_medido(spec, user, alcance, deadline)
-	consultas.append(spec)
+	resultado = _ejecutar_complementaria(
+		spec, user, alcance, deadline, consultas, registro=registro,
+		motivo="efectividad por grupo",
+	)
 	return _porcentajes(spec, resultado)
 
 
@@ -6872,22 +6946,31 @@ def _comparativo(actual, medida, rango, inicio):
 	}
 
 
-def _calcular_efectividad(spec, resultado, universo, user, alcance, deadline, cfg, consultas):
+def _calcular_efectividad(spec, resultado, universo, user, alcance, deadline, cfg, consultas, registro=None):
 	rango = _rango_del_spec(spec) or _periodo_mes_actual()
 	filtros = _filtros_sin_fecha(spec)
 	inicio = _inicio_de_datos(universo)
-	actual = _medir_efectividad(filtros, rango, user, alcance, deadline, consultas)
+	actual = _medir_efectividad(
+		filtros, rango, user, alcance, deadline, consultas, registro=registro,
+		motivo="efectividad del período",
+	)
 
-	def medir_si_hay_datos(otro):
+	def medir_si_hay_datos(otro, motivo):
 		if inicio and frappe.utils.getdate(otro[1]) < inicio:
 			return None
-		return _medir_efectividad(filtros, otro, user, alcance, deadline, consultas)
+		return _medir_efectividad(
+			filtros, otro, user, alcance, deadline, consultas, registro=registro, motivo=motivo
+		)
 
 	anterior_rango = _periodo_anterior(rango)
-	anterior = medir_si_hay_datos(anterior_rango)
+	anterior = medir_si_hay_datos(anterior_rango, "efectividad del período anterior")
 	anio_rango = _desplazar_anios(rango, -1)
 	comparar_anio = cfg.get("comparar_ano_anterior", True)
-	anio = medir_si_hay_datos(anio_rango) if comparar_anio else None
+	anio = (
+		medir_si_hay_datos(anio_rango, "efectividad del mismo período del año anterior")
+		if comparar_anio
+		else None
+	)
 	comparativos = {
 		"periodo_anterior": _comparativo(actual, anterior, anterior_rango, inicio),
 		"mismo_periodo_ano_anterior": _comparativo(actual, anio, anio_rango, inicio),
@@ -6907,7 +6990,10 @@ def _calcular_efectividad(spec, resultado, universo, user, alcance, deadline, cf
 		cursor = _periodo_anterior(cursor)
 		if inicio and frappe.utils.getdate(cursor[1]) < inicio:
 			break
-		medida = _medir_efectividad(filtros, cursor, user, alcance, deadline, consultas)
+		medida = _medir_efectividad(
+			filtros, cursor, user, alcance, deadline, consultas, registro=registro,
+			motivo="efectividad de la tendencia",
+		)
 		serie.insert(0, (_fecha_legible(cursor[0]), medida["pct"]))
 	serie.append((_fecha_legible(rango[0]), actual["pct"]))
 	tendencia = _calc.tendencia(serie) if len(serie) > 1 else []
@@ -6921,7 +7007,8 @@ def _calcular_efectividad(spec, resultado, universo, user, alcance, deadline, cf
 		# propia sobre todo el período; el total de la concentración es el de la
 		# base sin agrupar, no la suma de las filas.
 		filas = _medir_grupos_efectividad(
-			filtros, rango, spec["group_by"], user, alcance, deadline, consultas
+			filtros, rango, spec["group_by"], user, alcance, deadline, consultas,
+			registro=registro,
 		)
 		pares = [(f["grupo"], (f["total"] or 0) - (f["recuperadas"] or 0)) for f in filas]
 		concentracion = _calc.concentracion(pares, no_recolectadas, 3)
@@ -6954,7 +7041,7 @@ def _calcular_efectividad(spec, resultado, universo, user, alcance, deadline, cf
 	}
 
 
-def _calcular_conteo(spec, resultado, user, alcance, deadline, consultas):
+def _calcular_conteo(spec, resultado, user, alcance, deadline, consultas, registro=None):
 	"""Concentración de un conteo agrupado: cuántos grupos explican el total."""
 	alias = str(spec["aggregations"][0].get("alias") or "").lower()
 	columnas = [str(c).lower() for c in resultado.get("columnas") or []]
@@ -6981,8 +7068,10 @@ def _calcular_conteo(spec, resultado, user, alcance, deadline, consultas):
 		"render_chart": None,
 		"out_of_scope": False,
 	})
-	total_res = _ejecutar_medido(total_spec, user, alcance, deadline)
-	consultas.append(total_spec)
+	total_res = _ejecutar_complementaria(
+		total_spec, user, alcance, deadline, consultas, registro=registro,
+		motivo="total del conteo para la concentración",
+	)
 	total = (total_res.get("filas") or [[0]])[0][0] or 0
 	return {
 		"tipo": "conteo",
@@ -6996,21 +7085,26 @@ def _calcular_conteo(spec, resultado, user, alcance, deadline, consultas):
 	}
 
 
-def _calcular_analisis(spec, resultado, universo, user, alcance, deadline):
+def _calcular_analisis(spec, resultado, universo, user, alcance, deadline, registro=None):
 	"""Análisis determinista de la consulta principal, o None si no aplica."""
 	cfg = _config_analisis()
 	consultas = []
 	if _es_spec_efectividad(spec):
 		if not _porcentajes(spec, resultado):
 			return None
-		analisis = _calcular_efectividad(spec, resultado, universo, user, alcance, deadline, cfg, consultas)
+		analisis = _calcular_efectividad(
+			spec, resultado, universo, user, alcance, deadline, cfg, consultas,
+			registro=registro,
+		)
 	elif (
 		spec.get("group_by")
 		and len(spec.get("aggregations") or []) == 1
 		and str(spec["aggregations"][0].get("func") or "").lower() in ("count", "sum")
 		and not spec.get("fields")
 	):
-		analisis = _calcular_conteo(spec, resultado, user, alcance, deadline, consultas)
+		analisis = _calcular_conteo(
+			spec, resultado, user, alcance, deadline, consultas, registro=registro
+		)
 		if analisis is None:
 			return None
 	else:
@@ -7023,7 +7117,7 @@ def _calcular_analisis(spec, resultado, universo, user, alcance, deadline):
 	return analisis
 
 
-def _analisis_completo(spec, resultado, universo, user, alcance, presupuesto):
+def _analisis_completo(spec, resultado, universo, user, alcance, presupuesto, registro=None):
 	"""Análisis + hallazgos + sugerencias para el modo analítico.
 
 	Un error inesperado en el análisis no tumba la respuesta: se registra y la
@@ -7032,7 +7126,9 @@ def _analisis_completo(spec, resultado, universo, user, alcance, presupuesto):
 	"""
 	inicio = time.time()
 	try:
-		analisis = _calcular_analisis(spec, resultado, universo, user, alcance, presupuesto)
+		analisis = _calcular_analisis(
+			spec, resultado, universo, user, alcance, presupuesto, registro=registro
+		)
 	except TiempoAgotado:
 		raise
 	except Exception:
@@ -7092,6 +7188,33 @@ def _encabezado_de(argumentos):
 	return "\n\n".join(
 		parte for parte in (argumentos.get("titulo_texto"), argumentos.get("periodo_texto")) if parte
 	)
+
+
+RE_INVITACION = re.compile(
+	r"^\s*(?:[-*_]{1,2}\s*)?sugerencia\s*:\s*(?:\*\*|__)?\s*(.+?)\s*$",
+	re.IGNORECASE,
+)
+
+
+def _extraer_invitacion(texto):
+	"""Separa la invitación a tocar los botones del resto de la respuesta.
+
+	El modelo la escribe al final con el prefijo "Sugerencia:" (ver
+	`SYSTEM_EXPLAIN_SUGERENCIAS`). Se quita del texto y se devuelve aparte para
+	que el chat la pinte justo encima de los botones. Sin marcador no hay
+	invitación: nunca se inventa un texto fijo.
+	"""
+	lineas = str(texto or "").split("\n")
+	for i in range(len(lineas) - 1, -1, -1):
+		match = RE_INVITACION.match(lineas[i])
+		if not match:
+			continue
+		invitacion = match.group(1).strip().strip("\"“”'*_ ")
+		if not invitacion:
+			continue
+		resto = "\n".join(lineas[:i] + lineas[i + 1:]).rstrip()
+		return resto, invitacion
+	return texto, ""
 
 
 def _verificacion_breve(texto, info_exp, argumentos):
@@ -7187,11 +7310,13 @@ def _explicacion_en_codigo(spec, pregunta):
 
 
 @frappe.whitelist()
-def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, hasta=None, **_ignorados):
+def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, hasta=None, progreso_id=None, **_ignorados):
 	"""Flujo completo: universo -> spec -> validación -> ejecución -> explicación.
 
 	El modo de respuesta no es un parámetro del cliente: cualquier clave extra
 	(p. ej. "modo") se ignora y el modo sale de la configuración en el servidor.
+	`progreso_id` tampoco manda nada: solo identifica la pregunta para que el
+	chat consulte en qué etapa va (endpoint `progreso`).
 	"""
 	user = frappe.session.user
 	if user == "Guest":
@@ -7252,6 +7377,19 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		aseguradora_log = propias[0]
 	consulta_id = frappe.generate_hash(length=10)
 	inicio_ask = time.time()
+	# Cronómetros de las etapas: el total es tiempo de pared del turno; la
+	# construcción es el código que arma el SQL y la BD es ejecutar(). El LLM
+	# de cada llamada lo mide `llm_factory` en `latencia_ms`.
+	inicio_total = time.perf_counter()
+	tiempos_etapas = {"construccion_ms": 0, "bd_ms": 0}
+	# Id que usa el chat para preguntar en qué etapa va. Solo se acepta un
+	# identificador simple: es una llave de caché, no un dato del cliente.
+	progreso_id = (
+		progreso_id.strip()[:40]
+		if isinstance(progreso_id, str) and progreso_id.strip().isalnum()
+		else None
+	)
+	_marcar_progreso(progreso_id, "pregunta")
 
 	# Datos sensibles: credenciales, cuentas/permisos y catálogo de
 	# aseguradoras. Regla de servidor, antes del LLM: no cuesta tokens y no
@@ -7281,6 +7419,8 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 
 	# "A contra B" se arma en código: el modelo tardaba 20-60 s y el navegador
 	# cortaba la petición (499) aunque la consulta tarda 0.1 s.
+	_marcar_progreso(progreso_id, "consulta")
+	inicio_construccion = time.perf_counter()
 	spec = _spec_sin_modelo(pregunta_det)
 	if spec is not None:
 		_log_llamada(
@@ -7305,6 +7445,12 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 			info, "generate_spec", "Éxito", consulta_id, user, aseguradora_log,
 			historial=historial,
 		)
+		# El LLM no es construcción: el código que arma el SQL empieza al volver.
+		inicio_construccion = time.perf_counter()
+	# El campo de período de Pieza es `fecha_hora_carga` (2026-11-17). Si el
+	# modelo devolvió el campo viejo, se reescribe antes de los completers para
+	# que también ellos (período, efectividad, resumen) lo vean.
+	spec = normalizar_ingreso(spec)
 	spec = _completar_efectividad(spec, pregunta_det)
 	spec = _completar_mapa_efectividad(spec, pregunta_det)
 	spec = _completar_mezcla_volumen_efectividad(spec, pregunta_det)
@@ -7351,6 +7497,7 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		# La respuesta devuelve el período que de verdad se consultó (el selector
 		# se queda en "Este año" en el chat aunque estuviera en otro preset).
 		periodo = "este_anio"
+	tiempos_etapas["construccion_ms"] = int((time.perf_counter() - inicio_construccion) * 1000)
 
 	if spec.get("out_of_scope"):
 		_log_llamada(
@@ -7421,7 +7568,10 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 
 	try:
 		inicio_principal = time.time()
+		_marcar_progreso(progreso_id, "datos")
+		inicio_bd = time.perf_counter()
 		resultado = ejecutar(spec, user, alcance=alcance)
+		tiempos_etapas["bd_ms"] += int((time.perf_counter() - inicio_bd) * 1000)
 		duracion_principal = time.time() - inicio_principal
 	except SpecInvalida as e:
 		_log_llamada(
@@ -7472,19 +7622,21 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 			# La comparación se rearma con el año: las medidas llevan su período
 			# dentro de cada agregación y hay que recalcularlo.
 			filtros = dict(spec.get("filters") or {})
-			filtros["fechaingreso"] = ["between", desde_anio, hasta_anio]
+			filtros["fecha_hora_carga"] = ["between", desde_anio, hasta_anio]
 			spec = _completar_comparacion({**spec, "filters": filtros}, pregunta_det)
 		elif _es_spec_efectividad(spec):
 			# La efectividad lleva el período dentro de cada agregación (la unión
-			# mezcla las dos bases de fecha): un `fechaingreso` global acotaría
+			# mezcla las dos bases de fecha): un `fecha_hora_carga` global acotaría
 			# solo la mitad de la fórmula.
 			spec["aggregations"] = _aggs_efectividad(desde_anio, hasta_anio)
 		else:
 			filtros = dict(spec.get("filters") or {})
-			filtros["fechaingreso"] = ["between", desde_anio, hasta_anio]
+			filtros["fecha_hora_carga"] = ["between", desde_anio, hasta_anio]
 			spec["filters"] = filtros
 		try:
+			inicio_bd = time.perf_counter()
 			resultado = ejecutar(spec, user, alcance=alcance)
+			tiempos_etapas["bd_ms"] += int((time.perf_counter() - inicio_bd) * 1000)
 			ajuste_promedio = True
 			if lados_contra:
 				tabla_contra = _tabla_comparacion_contra(
@@ -7500,10 +7652,34 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	# Las respuestas que el código arma (título + período + tabla: promedios,
 	# rankings, listados de precio, comparativas, crecimiento…) no gastan una
 	# llamada al modelo: el proveedor puede tardar 20-80 s y el proxy corta a
-	# los 120 s ("Error de conexión"). El texto del modelo se descartaba igual.
+	# los 240 s ("Error de conexión"). El texto del modelo se descartaba igual.
 	explicacion_en_codigo = _explicacion_en_codigo(spec, pregunta_det) or bool(lados_contra)
 	info_exp = {}
+	log_explain = None
+
+	def registro_complementaria(motivo, spec_consulta, ms, error=""):
+		"""Una fila por consulta complementaria del análisis (sin tokens).
+
+		Se clasifica como `operacion = "complementary"` y lleva el spec ejecutado
+		y su tiempo de BD; el agregado del turno sigue en la fila `explain`.
+		"""
+		_log_llamada(
+			{
+				"latencia_bd_ms": ms,
+				"motivo_consulta": motivo,
+				"consulta_spec": json.dumps(spec_consulta, ensure_ascii=False, default=str),
+			},
+			"complementary",
+			"Fallo" if error else "Éxito",
+			consulta_id,
+			user,
+			aseguradora_log,
+			error,
+			historial=historial,
+		)
+
 	explicacion = ""
+	texto_sugerencias = ""
 	analisis_omitido = False
 	nota_analisis = ""
 	pack = None
@@ -7512,7 +7688,8 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		analisis_omitido = True
 		nota_analisis = _nota_periodo_largo()
 	if explicacion_en_codigo:
-		_log_llamada(
+		_marcar_progreso(progreso_id, "respuesta")
+		log_explain = _log_llamada(
 			{"modo": "Código", "intencion": intencion}, "explain", "Éxito", consulta_id,
 			user, aseguradora_log, "explicación en código (sin modelo)",
 		)
@@ -7526,13 +7703,23 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		explicado = False
 		if modo_pedido == "Analítico" and not periodo_largo:
 			# Presupuesto total desde que llega la pregunta; la reserva deja tiempo
-			# para la respuesta breve de respaldo dentro de los 120 s del proxy.
+			# para la respuesta breve de respaldo dentro de los 240 s del proxy.
 			presupuesto = _Presupuesto(
 				limite=inicio_ask + _presupuesto_analisis_seg() - RESERVA_RESPALDO_SEG,
 				estimado=duracion_principal,
 			)
 			try:
-				pack = _analisis_completo(spec, resultado, universo, user, alcance, presupuesto)
+				_marcar_progreso(progreso_id, "analisis")
+				pack = _analisis_completo(
+					spec, resultado, universo, user, alcance, presupuesto,
+					registro=registro_complementaria,
+				)
+				# Las sugeridas se conocen antes de redactar: viajan al prompt para
+				# que el modelo cierre con una invitación propia (no fija).
+				argumentos["sugerencias"] = _preguntas_sugeridas(
+					pack, modo_pedido, analisis_omitido
+				)
+				_marcar_progreso(progreso_id, "respuesta")
 				explicacion, info_exp = explain(
 					pregunta_det, spec, resultado, **argumentos,
 					modo="Analítico", intencion=intencion,
@@ -7543,7 +7730,9 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 					explicacion, info_exp, pregunta_det, spec, resultado, argumentos,
 					intencion, pack, presupuesto,
 				)
-				_log_llamada(
+				# La invitación se pinta como texto aparte, arriba de los botones.
+				explicacion, texto_sugerencias = _extraer_invitacion(explicacion)
+				log_explain = _log_llamada(
 					info_exp, "explain", "Éxito", consulta_id, user, aseguradora_log,
 					# Lo que se quitó (o "") queda a la vista en el registro.
 					error=("Verificación: " + " || ".join(quitados)) if quitados else "",
@@ -7554,7 +7743,7 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 				analisis_omitido = True
 				pack = None
 				nota_analisis = NOTA_TIEMPO_PREVISTO.format(segundos=round(e.segundos))
-				_log_llamada(
+				log_explain = _log_llamada(
 					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
 					historial=historial, modo="Analítico", intencion=intencion,
 					analisis_omitido=True,
@@ -7563,41 +7752,42 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 				analisis_omitido = True
 				pack = None
 				nota_analisis = NOTA_TIEMPO_ANALISIS
-				_log_llamada(
+				log_explain = _log_llamada(
 					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
 					historial=historial, modo="Analítico", intencion=intencion,
 					analisis_omitido=True,
 				)
 			except (LLMConfigError, LLMProviderError) as e:
 				pack = None
-				_log_llamada(
+				log_explain = _log_llamada(
 					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
 					historial=historial, modo="Analítico", intencion=intencion,
 				)
 		if not explicado:
-			# La respuesta breve de respaldo tampoco puede pasar de los 120 s del proxy
+			# La respuesta breve de respaldo tampoco puede pasar de los 240 s del proxy
 			# cuando viene de un análisis que se quedó sin tiempo.
 			limite_breve = (
 				inicio_ask + _presupuesto_analisis_seg() if modo_pedido == "Analítico" else None
 			)
 			try:
+				_marcar_progreso(progreso_id, "respuesta")
 				explicacion, info_exp = explain(
 					pregunta_det, spec, resultado, **argumentos, intencion=intencion,
 					deadline=limite_breve,
 				)
 				info_exp["verificacion"] = _verificacion_breve(explicacion, info_exp, argumentos)
-				_log_llamada(
+				log_explain = _log_llamada(
 					info_exp, "explain", "Éxito", consulta_id, user, aseguradora_log,
 					historial=historial,
 				)
 			except LLMTiempoAgotado as e:
-				_log_llamada(
+				log_explain = _log_llamada(
 					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
 					historial=historial, intencion=intencion,
 				)
 				explicacion = NOTA_SIN_TIEMPO
 			except (LLMConfigError, LLMProviderError) as e:
-				_log_llamada(
+				log_explain = _log_llamada(
 					{}, "explain", "Fallo", consulta_id, user, aseguradora_log, str(e),
 					historial=historial, intencion=intencion,
 				)
@@ -7936,7 +8126,9 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 			"limit": 1,
 		}
 		try:
+			inicio_bd = time.perf_counter()
 			resultado_previo = ejecutar(spec_previo, user, alcance=alcance)
+			tiempos_etapas["bd_ms"] += int((time.perf_counter() - inicio_bd) * 1000)
 			porcentajes_previos = _porcentajes(spec_previo, resultado_previo)
 			if porcentajes_previos and (porcentajes_previos[0].get("total") or 0):
 				previas_ficha = porcentajes_previos[0].get("pct") or 0
@@ -8048,7 +8240,9 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 			# fecha, así que se consultan por separado.
 			spec_b = {**spec, "aggregations": _aggs_efectividad(*lados_contra[1][1])}
 			try:
+				inicio_bd = time.perf_counter()
 				resultado_b = ejecutar(spec_b, user, alcance=alcance)
+				tiempos_etapas["bd_ms"] += int((time.perf_counter() - inicio_bd) * 1000)
 			except (SpecInvalida, frappe.PermissionError):
 				resultado_b = None
 			if resultado_b:
@@ -8102,13 +8296,32 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		doc, pregunta, explicacion, spec, mostrar, resultado["cobertura"],
 		primera=not conversacion, universo=universo,
 	)
+	# Las cifras de las etapas van en la última fila del log del turno (la
+	# explicación): a esta altura ya corrieron también las consultas derivadas
+	# (ficha, comparación de períodos) y el armado de la respuesta.
+	if log_explain:
+		tiempos_etapas["total_ms"] = int((time.perf_counter() - inicio_total) * 1000)
+		frappe.db.set_value(
+			"IA API Log",
+			log_explain,
+			{
+				"latencia_construccion_ms": tiempos_etapas["construccion_ms"],
+				"latencia_bd_ms": tiempos_etapas["bd_ms"],
+				"latencia_total_ms": tiempos_etapas["total_ms"],
+			},
+			update_modified=False,
+		)
+	sugeridas = _preguntas_sugeridas(pack, modo_pedido, analisis_omitido)
 	return {
 		"ok": True,
 		"conversacion": doc.name,
 		"universo": universo,
 		"universo_nombre": _nombre_aseguradora(universo),
 		"periodo": "este_anio" if ajuste_promedio else periodo,
-		"preguntas_sugeridas": _preguntas_sugeridas(pack, modo_pedido, analisis_omitido),
+		"preguntas_sugeridas": sugeridas,
+		# La invitación la redactó el modelo junto con la respuesta; sin
+		# sugeridas no se manda nada (los botones nunca llevan texto fijo).
+		"texto_sugerencias": texto_sugerencias if sugeridas else "",
 		"periodo_del_texto": bool(
 			_trae_periodo(pregunta)
 			or _trae_rango_de_fechas(pregunta)
@@ -8126,6 +8339,26 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		"render_chart": spec.get("render_chart"),
 		"spec": spec,
 	}
+
+
+@frappe.whitelist()
+def progreso(consulta_id=None):
+	"""Etapa en la que va una pregunta del chat (solo informativo).
+
+	El chat lo consulta cada segundo mientras espera el `ask`. No expone datos
+	de la consulta ni del usuario: solo la etapa y su texto fijo. Cualquier
+	fallo (caché caída, id desconocido) devuelve vacío y el chat mantiene el
+	mensaje que ya tiene.
+	"""
+	if not isinstance(consulta_id, str) or not consulta_id.strip().isalnum():
+		return {"etapa": "", "texto": ""}
+	try:
+		dato = frappe.cache().get_value(_clave_progreso(consulta_id.strip()[:40]))
+	except Exception:
+		dato = None
+	if not isinstance(dato, dict):
+		return {"etapa": "", "texto": ""}
+	return {"etapa": dato.get("etapa") or "", "texto": dato.get("texto") or ""}
 
 
 def _tabla_efectividad(spec, porcentajes):
@@ -8191,7 +8424,7 @@ ETIQUETAS_COLUMNA = {
 	"pais_origen": "País de origen",
 	"estadolocalidad": "Estado",
 	"recolectadas_en_periodo": "Recolectadas en periodo",
-	"fechaingreso": "Fecha de ingreso",
+	"fecha_hora_carga": "Fecha de ingreso",
 	"fecha_hora_recoleccion": "Fecha de recolección",
 	"fecha_inicio": "Fecha de inicio",
 	"fecha_completado": "Fecha de completado",

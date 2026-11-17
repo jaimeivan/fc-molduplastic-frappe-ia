@@ -30,7 +30,7 @@ VIRTUALES = {
 		"mes": {
 			"label": "Mes de ingreso",
 			"fieldtype": "Virtual",
-			"origen": "fechaingreso",
+			"origen": "fecha_hora_carga",
 		}
 	},
 	"Recoleccion": {
@@ -75,7 +75,12 @@ FIELDTYPES_PROHIBIDOS = {
 # Fieldtypes numéricos aptos para agregaciones sum/avg/min/max.
 FIELDTYPES_NUMERICOS = {"Int", "Float", "Currency", "Percent"}
 
-CACHE_KEY = "molduplastic_ia:whitelist:v2"
+# Campos que el modelo no debe ver: el período de Pieza es `fecha_hora_carga`
+# desde el 2026-11-17 y `fechaingreso` está deprecado (el ejecutor lo reescribe
+# para que los specs guardados sigan funcionando).
+CAMPOS_OCULTOS = {"Pieza": {"fechaingreso"}}
+
+CACHE_KEY = "molduplastic_ia:whitelist:v3"
 CACHE_TTL = 24 * 60 * 60
 
 
@@ -101,6 +106,8 @@ def _construir_whitelist():
 		links = {}
 		for df in meta.fields:
 			if df.fieldtype in FIELDTYPES_PROHIBIDOS:
+				continue
+			if df.fieldname in CAMPOS_OCULTOS.get(doctype, ()):
 				continue
 			if df.fieldtype in ("Section Break", "Column Break", "Tab Break", "Button", "Heading"):
 				continue

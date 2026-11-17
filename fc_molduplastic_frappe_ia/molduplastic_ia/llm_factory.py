@@ -17,6 +17,7 @@ import unicodedata
 import frappe
 import requests
 
+from fc_molduplastic_frappe_ia.molduplastic_ia.hallazgos import es_pendiente
 from fc_molduplastic_frappe_ia.molduplastic_ia.regiones import resumen_regiones
 from fc_molduplastic_frappe_ia.molduplastic_ia.whitelist import get_contexto_destilado
 
@@ -75,11 +76,13 @@ prompt "DESDE" y "HASTA" son marcadores: ahí van las fechas ISO del período qu
 pida la pregunta, nunca se copian literalmente.
 
 Elige el campo de fecha según lo que la pregunta mida, no por costumbre:
-  - fechaingreso           cuándo entró la pieza a la base (mes en que llegó)
+  - fecha_hora_carga       cuándo se cargó la pieza al sistema: ES la fecha de
+                           ingreso de los tableros de BI ("entró al sistema")
   - fecha_hora_recoleccion cuándo fue recolectada (mes en que salió)
-  - fechaentrega, fecha_hora_carga  otros momentos del proceso
+  - fechaentrega           entrega al asegurado (otro momento del proceso)
+No uses `fechaingreso`: está deprecado (la app lo reescribe a fecha_hora_carga).
 "de este mes" sin más adjetivo, sobre piezas que están entrando al sistema,
-es fechaingreso. Usa fecha_hora_recoleccion solo si la pregunta habla de
+es fecha_hora_carga. Usa fecha_hora_recoleccion solo si la pregunta habla de
 recolección, de piezas ya recolectadas o de lo que se recolectó este mes.
 
 Fechas: ahora mismo es {fecha_actual}. Resuelve las expresiones relativas con
@@ -101,7 +104,7 @@ curso); "trimestre actual", "este trimestre" y "cuatrimestre actual" son el
 bloque de hoy (hasta hoy, como "este mes"). Si pones el between, que sea el del
 bloque completo: día 1 00:00:00 del primer mes al último día 23:59:59.
 Si la pregunta no fija un período, NO lo dejes sin filtro: usa el mes
-actual sobre fechaingreso, del día 1 a hoy 23:59:59. "Dame el total de
+actual sobre fecha_hora_carga, del día 1 a hoy 23:59:59. "Dame el total de
 piezas" sin más significa el total de piezas que ingresaron este mes, no el
 histórico. Solo se omite el filtro si piden el histórico así ("de toda la
 base", "acumulado", "histórico").
@@ -128,7 +131,7 @@ Funciones de agregación:
 Si piden el número de algo que se repite fila por fila (un siniestro, una
 póliza, un folio), cuenta los DISTINTOS, no las filas: 6 piezas del mismo
 siniestro son 1 siniestro, no 6. "¿Cuántos siniestros hay?" (sin período) es
-count_distinct(siniestro) con el mes actual sobre fechaingreso, en "filters"
+count_distinct(siniestro) con el mes actual sobre fecha_hora_carga, en "filters"
 global: una agregación, una cifra.
 
 Cada agregación puede llevar su propio "filtros", con las mismas reglas que
@@ -138,7 +141,7 @@ distintas, cuando no comparten el mismo "filters":
    "filtros": {{"fecha_hora_recoleccion": ["between", "DESDE", "HASTA"]}}}}
   {{"func": "sum", "field": "preciovale", "alias": "pendiente",
    "filtros": {{"fecha_hora_recoleccion": ["is", "null"],
-               "fechaingreso": ["between", "DESDE", "HASTA"]}}}}
+               "fecha_hora_carga": ["between", "DESDE", "HASTA"]}}}}
 Ojo con el patrón: si las dos medidas se definen por campos de fecha
 DISTINTOS, deja "filters" global VACÍO y pon la condición completa de cada
 medida en su propia agregación. Poner una sola fecha en "filters" global
@@ -153,7 +156,7 @@ va en "filters" global y las tres condiciones estrictas en el "filtros" de la
 agregación.
 
 Totales del mes con desglose (total / recolectadas / pendientes en una sola
-pregunta): las tres comparten el período sobre fechaingreso. Pon el between
+pregunta): las tres comparten el período sobre fecha_hora_carga. Pon el between
 en "filters" global y ponles a las tres el mismo "filtros" propio con
 {{"recolectable": ["=", 1]}}: total, recolectadas (más la definición estricta
 de más abajo) y pendientes (más la de pendientes). En ese caso no uses between
@@ -177,14 +180,14 @@ curso. Consulta todas las categorías (no solo "recolectadas"): la presentación
 recorta a cuatro filas, pero el spec lleva las ocho para que el chat pueda
 mostrar el detalle si se pide.
 
-Las seis primeras llevan el between sobre fechaingreso; las dos últimas, sobre
+Las seis primeras llevan el between sobre fecha_hora_carga; las dos últimas, sobre
 fecha_hora_recoleccion:
-  1. total / ingresadas   (fechaingreso between + recolectable = 1)
+  1. total / ingresadas   (fecha_hora_carga between + recolectable = 1)
   2. recolectadas         (A + B: ingresó en el período con estatus 100 y fecha + recolectada en el período con ingreso anterior)
   3. no recolectadas      (lo anterior + su definición)
   4. pendientes           (lo anterior + su definición)
-  5. inconsistentes recolectadas      (fechaingreso between + su definición)
-  6. inconsistentes no recolectadas   (fechaingreso between + su definición)
+  5. inconsistentes recolectadas      (fecha_hora_carga between + su definición)
+  6. inconsistentes no recolectadas   (fecha_hora_carga between + su definición)
   7. rezagadas recolectadas           (recolección between + su definición)
   8. rezagadas no recolectadas        (recolección between + su definición)
 La app arma el resumen con DIEZ agregaciones: las tres de la unión
@@ -206,12 +209,12 @@ llama "Valor".
 
 Definición de "recolectada" (dueño, 2026-10-31): suma de tres categorías
 disjuntas, cada una con su base de fecha:
-  A1 "recolectadas en periodo" = fechaingreso en el período, id_estatus = 100,
+  A1 "recolectadas en periodo" = fecha_hora_carga en el período, id_estatus = 100,
       recolectable = 1, fecha_hora_recoleccion en el MISMO mes y no anterior al
       ingreso.
-  A2 inconsistentes recolectadas = fechaingreso en el período, id_estatus = 100,
+  A2 inconsistentes recolectadas = fecha_hora_carga en el período, id_estatus = 100,
       recolectable = 1, fecha_hora_recoleccion ANTERIOR al ingreso.
-  B rezagadas recolectadas = fecha_hora_recoleccion en el período, fechaingreso
+  B rezagadas recolectadas = fecha_hora_recoleccion en el período, fecha_hora_carga
       ANTERIOR al período, id_estatus = 100, recolectable = 1.
 Recolectadas = A1 + A2 + B (en periodo + inconsistentes + rezagadas).
 Van en tres agregaciones —"recolectadas" (A1), "recolectadas_inconsistentes"
@@ -220,23 +223,23 @@ suma la calcula la app, no la hagas tú. Ya no se exige el mismo mes ni que la
 recolección sea posterior al ingreso.
 Definición de INCONSISTENTE RECOLECTADA (dicen "inconsistentes", "piezas
 inconsistentes", "inconsistentes recolectadas"): son tres condiciones: la pieza
-entró en el período (between sobre fechaingreso), la fecha_hora_recoleccion es
-ANTERIOR al fechaingreso y id_estatus = 100 (Recolectado). El período va en
+entró en el período (between sobre fecha_hora_carga), la fecha_hora_recoleccion es
+ANTERIOR al fecha_hora_carga y id_estatus = 100 (Recolectado). El período va en
 "filters" global; las otras dos, en el "filtros" de la agregación:
-  "filtros": {{"fecha_hora_recoleccion": ["<", {{"campo": "fechaingreso"}}],
+  "filtros": {{"fecha_hora_recoleccion": ["<", {{"campo": "fecha_hora_carga"}}],
               "id_estatus": ["=", 100]}}
 Ojo: el operador "<" contra otro campo ya excluye las piezas sin fecha de
 recolección (null < algo es null), así que no se cruzan con "pendientes". Y
 esto NO es lo mismo que una pieza "recolectada" a secas: tiene estatus 100 pero
-su fecha de recolección es anterior al ingreso, o sea el dato es incoherente. Este va siempre sobre fechaingreso.
+su fecha de recolección es anterior al ingreso, o sea el dato es incoherente. Este va siempre sobre fecha_hora_carga.
 
 Definición de INCONSISTENTE NO RECOLECTADA ("inconsistentes no
-recolectadas"): la pieza entró en el período (between sobre fechaingreso), la
-fecha_hora_recoleccion es ANTERIOR al fechaingreso y id_estatus está en
+recolectadas"): la pieza entró en el período (between sobre fecha_hora_carga), la
+fecha_hora_recoleccion es ANTERIOR al fecha_hora_carga y id_estatus está en
 ["in", [200, 201, 202, 203, 204, 205, 206]]. Es la hermana de
 "inconsistente recolectada": misma incoherencia de fechas, distinto estatus.
 El período va en "filters" global; las otras dos, en el "filtros":
-  "filtros": {{"fecha_hora_recoleccion": ["<", {{"campo": "fechaingreso"}}],
+  "filtros": {{"fecha_hora_recoleccion": ["<", {{"campo": "fecha_hora_carga"}}],
               "id_estatus": ["in", [200, 201, 202, 203, 204, 205, 206]]}}
 Con estas cinco categorías el resumen SÍ cierra: ingresadas =
 recolectadas + no recolectadas + pendientes + inconsistentes recolectadas +
@@ -249,9 +252,9 @@ ingresado el mes pasado o antes. A diferencia de las inconsistentes, aquí la
 recolección es POSTERIOR al ingreso; el "problema" es que el ingreso es de otro
 mes. El período va sobre fecha_hora_recoleccion en "filters" global; el corte
 del ingreso y el estatus, en el "filtros" de la agregación:
-  "filtros": {{"fechaingreso": ["<", "primer día del mes a las 00:00:00"],
+  "filtros": {{"fecha_hora_carga": ["<", "primer día del mes a las 00:00:00"],
               "id_estatus": ["=", 100]}}
-Ojo: "fechaingreso < primer día del mes" es lo que garantiza que el ingreso sea
+Ojo: "fecha_hora_carga < primer día del mes" es lo que garantiza que el ingreso sea
 de otro mes; no uses mes_distinto para esto. Ojo también: las pendientes no
 entran, porque no tienen fecha_hora_recoleccion y el between ya las excluye.
 NO SUMES rezagadas recolectadas con las otras categorías del resumen: mide otra
@@ -269,18 +272,18 @@ pieza se recolectó dentro del período, su ingreso es ANTERIOR al primer día d
 ese período y el estatus es distinto de "Recolectado". El período va sobre
 fecha_hora_recoleccion en "filters" global; el corte del ingreso y el estatus,
 en el "filtros":
-  "filtros": {{"fechaingreso": ["<", "primer día del mes a las 00:00:00"],
+  "filtros": {{"fecha_hora_carga": ["<", "primer día del mes a las 00:00:00"],
               "id_estatus": ["in", [200, 201, 202, 203, 204, 205, 206]]}}
 Igual que la recolectada, NO se suma con las categorías cuyo período va sobre
-fechaingreso: mide piezas de meses anteriores. Rezagadas recolectadas y
+fecha_hora_carga: mide piezas de meses anteriores. Rezagadas recolectadas y
 rezagadas no recolectadas sí son entre sí excluyentes y suman el total de
 recolectadas del período.
 
 Definición de NO RECOLECTADA (también "no recolectadas en periodo" —el nombre
 que usa el chat—, "no recolectadas", "no entregadas" —es el mismo sinónimo— y
 "no se recogieron"): son cuatro condiciones a la vez: la pieza entró en el período
-(between sobre fechaingreso), recolectable = 1, la fecha_hora_recoleccion igual
-o posterior al fechaingreso, y id_estatus dentro de la lista
+(between sobre fecha_hora_carga), recolectable = 1, la fecha_hora_recoleccion igual
+o posterior al fecha_hora_carga, y id_estatus dentro de la lista
 ["in", [200, 201, 202, 203, 204, 205, 206]], que en el catálogo Estatus es:
 200 No recolectado, 201 Vehículo en reparación, 202 Vehículo perdido total,
 203 Pago de daños, 204 Incidencia, 205 Otros, 206 Pieza no localizada. Ojo: los
@@ -291,11 +294,11 @@ estatus 100 (Recolectado) NO va en la lista: una pieza estatus 100 no es "no
 recolectada" aunque su fecha sea rara. El período va en "filters" global y las
 tres restantes en el "filtros" de la agregación:
   "filtros": {{"recolectable": ["=", 1],
-              "fecha_hora_recoleccion": [">=", {{"campo": "fechaingreso"}}],
+              "fecha_hora_recoleccion": [">=", {{"campo": "fecha_hora_carga"}}],
               "id_estatus": ["in", [200, 201, 202, 203, 204, 205, 206]]}}
 
 Definición de PENDIENTE: son cuatro condiciones, todas a la vez: la pieza
-entró en el período (entre sobre fechaingreso), id_estatus vacío (null),
+entró en el período (entre sobre fecha_hora_carga), id_estatus vacío (null),
 fecha_hora_recoleccion null y recolectable = 1. El período va en "filters"
 global; las otras tres, en el "filtros" de la agregación:
   "filtros": {{"id_estatus": ["is", "null"],
@@ -313,12 +316,12 @@ de otro mes; eso no cuenta como recolectada.
 
 Definición de NO RECOLECTADAS (el total; "no recuperadas" y "no entregadas" son
 sinónimos): es la suma de tres categorías del período, cada una con su propia
-base de fecha: no recolectadas en periodo (fechaingreso between + su
-definición), inconsistentes no recolectadas (fechaingreso between + su
+base de fecha: no recolectadas en periodo (fecha_hora_carga between + su
+definición), inconsistentes no recolectadas (fecha_hora_carga between + su
 definición) y rezagadas no recolectadas (recolección between + su definición). Devuelve TRES count(*) con alias
 "no_recolectadas", "inconsistentes_no_recolectadas" y
 "rezagadas_no_recolectadas", con "filters" global VACÍO y la condición completa
-de cada una en su "filtros" (las dos primeras sobre fechaingreso, la rezagada
+de cada una en su "filtros" (las dos primeras sobre fecha_hora_carga, la rezagada
 sobre fecha_hora_recoleccion). La app suma las tres y publica la cifra: no la
 sumes tú. Para "no recuperadas por taller/región/..." pon el group_by; la app
 suma por grupo. Si piden los motivos ("motivos de no entrega más frecuentes"),
@@ -353,8 +356,8 @@ una región, filtra {{"region": ["=", "Norte"]}}.
 Varias condiciones sobre el mismo campo se escriben como lista de
 condiciones (se unen con AND, máximo 3):
   "fecha_hora_recoleccion": [["between", "DESDE", "HASTA"],
-    [">=", {{"campo": "fechaingreso"}}],
-    ["mes_igual", {{"campo": "fechaingreso"}}]]
+    [">=", {{"campo": "fecha_hora_carga"}}],
+    ["mes_igual", {{"campo": "fecha_hora_carga"}}]]
 Comparar campos: el valor {{"campo": "otro_campo"}} solo vale con =, !=, >,
 <, >=, <=. Los dos operadores de mes comparan el YYYY-MM de ambos campos:
 ["mes_distinto", {{"campo": "otro"}}] y ["mes_igual", {{"campo": "otro"}}].
@@ -441,27 +444,27 @@ La efectividad es (recolectadas + inconsistentes recolectadas + rezagadas
 recolectadas) / ingresadas × 100. El período es el que pida la pregunta; si no
 pide ninguno, el MES ACTUAL (día 1 a hoy), también en comparaciones y tops.
 "filters" global con
-el período sobre fechaingreso y {{"recolectable": ["=", 1]}} (las tres primeras
+el período sobre fecha_hora_carga y {{"recolectable": ["=", 1]}} (las tres primeras
 categorías comparten esa población); son cuatro count(*): "total" sin filtro,
 "recolectadas" con la definición estricta, "inconsistentes_recolectadas" con la
 suya y "rezagadas_recolectadas" con su período sobre fecha_hora_recoleccion
 (la app la ejecuta aparte y une el resultado por la dimensión); group_by con la
 dimensión. Spec exacto:
   {{"doctype": "Pieza",
-    "filters": {{"fechaingreso": ["between", "DESDE", "HASTA"],
+    "filters": {{"fecha_hora_carga": ["between", "DESDE", "HASTA"],
                 "recolectable": ["=", 1]}},
     "aggregations": [
       {{"func": "count", "field": "*", "alias": "total"}},
       {{"func": "count", "field": "*", "alias": "recolectadas",
        "filtros": {{"id_estatus": ["=", 100],
-                   "fecha_hora_recoleccion": [["mes_igual", {{"campo": "fechaingreso"}}],
-                                              [">=", {{"campo": "fechaingreso"}}]]}}}},
+                   "fecha_hora_recoleccion": [["mes_igual", {{"campo": "fecha_hora_carga"}}],
+                                              [">=", {{"campo": "fecha_hora_carga"}}]]}}}},
       {{"func": "count", "field": "*", "alias": "inconsistentes_recolectadas",
-       "filtros": {{"fecha_hora_recoleccion": ["<", {{"campo": "fechaingreso"}}],
+       "filtros": {{"fecha_hora_recoleccion": ["<", {{"campo": "fecha_hora_carga"}}],
                    "id_estatus": ["=", 100]}}}},
       {{"func": "count", "field": "*", "alias": "rezagadas_recolectadas",
        "filtros": {{"fecha_hora_recoleccion": ["between", "DESDE", "HASTA"],
-                   "fechaingreso": ["<", "DESDE"],
+                   "fecha_hora_carga": ["<", "DESDE"],
                    "id_estatus": ["=", 100]}}}}],
     "group_by": ["taller_asignado"], "limit": 50}}
 La efectividad del mes sin dimensión es igual pero sin group_by, y con las
@@ -503,7 +506,7 @@ recolectadas; "no recuperadas" y "no entregadas" son sinónimos de ese total. Si
 o el DocType Taller según el caso. "Totales" es sinónimo de "ingresadas":
 "los totales", "los totales de piezas", "cuántas piezas van de totales" o
 "el total de piezas" quieren decir las piezas que INGRESARON, así que el
-período va sobre fechaingreso y la cifra es un count(*) de ese período.
+período va sobre fecha_hora_carga y la cifra es un count(*) de ese período.
 Un total SOLO cuenta piezas con recolectable = 1: pon esa condición siempre,
 {{"recolectable": ["=", 1]}}, en el "filtros" de la agregación (el período se
 queda en "filters" global). No lo leas como "total de la base" (histórico) ni
@@ -531,52 +534,52 @@ con un renglón por siniestro: group_by ["siniestro"], count(*) con alias
 "pendientes" y los filtros de pendiente (id_estatus vacío, fecha_hora_recoleccion
 vacía, recolectable = 1), order_by desc por "pendientes" y limit 50. **Toda
 pregunta sobre siniestros asume el mes actual**: sin período, el between sobre
-fechaingreso es el del mes en curso; si la frase trae período, manda el suyo. La
+fecha_hora_carga es el del mes en curso; si la frase trae período, manda el suyo. La
 app arma el spec.
 "¿Cuántos siniestros puede manejar un CDR?" sí está dentro del alcance: CDR
 significa taller/Centro de Reparación. Cuenta los siniestros DISTINTOS asociados
 a cada taller con count_distinct(siniestro), group_by ["taller_asignado"] y
-fechaingreso del mes actual si no se indica período. Esto informa cuántos
+fecha_hora_carga del mes actual si no se indica período. Esto informa cuántos
 siniestros aparecen realmente asignados a cada CDR en los datos; no es una
 capacidad máxima teórica ni una estimación. La app arma este spec aunque la
 pregunta se haya clasificado inicialmente como fuera de alcance.
 "¿Qué años modelo aparecen más en los siniestros?" se contesta con
 count_distinct(siniestro) alias "siniestros", group_by ["modelo"] (el año del
-vehículo), order_by desc, limit 10 y el período sobre fechaingreso con
+vehículo), order_by desc, limit 10 y el período sobre fecha_hora_carga con
 {{"modelo": ["is", "not null"]}} (sin período, el mes en curso). La tabla lleva
 "Modelo" y "Siniestros"; la app arma el spec y pinta la tabla.
 "¿Cómo ha crecido el número de siniestros?" (crecimiento, evolución o variación de
 siniestros) se contesta con count_distinct(siniestro) alias "siniestros",
-group_by ["mes"] (campo virtual: YYYY-MM de fechaingreso), order_by mes asc y el
-período sobre fechaingreso (sin período, lo que va del año). La app calcula la
+group_by ["mes"] (campo virtual: YYYY-MM de fecha_hora_carga), order_by mes asc y el
+período sobre fecha_hora_carga (sin período, lo que va del año). La app calcula la
 variación mes a mes y pinta la tabla Mes | Siniestros | Variación.
 "¿De qué país de origen son los autos con más siniestros?" se contesta con
 count_distinct(siniestro) alias "siniestros", group_by ["pais_origen"] (campo
 virtual: marca → Marcas.cat_origen → Catalogo Datos), order_by desc, limit 10 y
-el período sobre fechaingreso (sin período, el mes en curso). La tabla lleva
+el período sobre fecha_hora_carga (sin período, el mes en curso). La tabla lleva
 "País de origen" y "Siniestros"; la app arma el spec y pinta la tabla.
 "¿Qué marcas/submarcas se accidentan más por mes?" se contesta con un top de
 siniestros: count_distinct(siniestro) con alias "siniestros", group_by ["marca"]
 (o ["tipo"] si piden submarcas), order_by desc por "siniestros", limit 10 y el
-período (sin período, el mes en curso) sobre fechaingreso con
+período (sin período, el mes en curso) sobre fecha_hora_carga con
 {{"recolectable": ["=", 1]}}. La tabla lleva "Marca"/"Submarca" y "Siniestros";
 la app arma el spec y pinta la tabla.
 "¿Cuántas piezas tiene en promedio un siniestro de X?" se contesta con dos cifras:
 count(*) alias "piezas" y count_distinct(siniestro) alias "siniestros", ambas con
 {{"recolectable": ["=", 1]}} en su "filtros" y el período (sin período, el mes en
-curso) sobre fechaingreso; el filtro de marca/submarca que nombre la pregunta va
+curso) sobre fecha_hora_carga; el filtro de marca/submarca que nombre la pregunta va
 en "filters". Sin group_by. La división la hace la app: tú no calcules el
 promedio.
 "¿Qué submarcas generan más piezas dañadas?" (o "qué submarcas tienen más piezas
 dañadas") NO es un campo de daño: "dañada" es la pieza que ingresó, así que se
 contesta con las piezas ingresadas por submarca — count(*) con
-{{"recolectable": ["=", 1]}} y el período sobre fechaingreso, group_by ["tipo"]
+{{"recolectable": ["=", 1]}} y el período sobre fecha_hora_carga, group_by ["tipo"]
 (la submarca), order_by desc por el alias "ingresadas" y limit 10. La app arma el
 spec. La tabla lleva EXACTAMENTE dos columnas: "Submarca" (el campo tipo) y
 "Ingresadas" (el conteo); no la llames "Piezas" ni "Dañadas".
 "Piezas no localizadas" (o "no localizadas") es el estatus 206 del catálogo
 Estatus (Pieza no localizada): filtro {{"id_estatus": ["=", 206]}} con count(*)
-y el período sobre fechaingreso; si la pregunta trae dimensión ("por taller",
+y el período sobre fecha_hora_carga; si la pregunta trae dimensión ("por taller",
 "por región", "por tipo CDR"), va en group_by con el nombre real del campo. La
 app fija el filtro; no lo cambies por "motivo" ni por texto libre.
 tipo_carga guarda el id del catálogo, no el nombre: 10=Taller, 11=Agencia,
@@ -602,9 +605,12 @@ Esquema disponible:
 
 SYSTEM_EXPLAIN = """Explicas resultados de consultas sobre piezas, recolecciones y
 talleres de una aseguradora. Responde en español, de forma conversacional y
-breve. Nunca inventes cifras: usa solo los datos entregados. Si la pregunta
-pide una sola cifra, responde en una línea con esa cifra (el período ya va en el
-encabezado); no agregues piezas, histórico ni desgloses que nadie pidió.
+breve, como le hablarías a un compañero de trabajo: tutea y usa frases
+naturales, sin tono de reporte (eso no cambia el formato: el encabezado, las
+tablas y la brevedad se mantienen). Nunca inventes cifras: usa solo los datos
+entregados. Si la pregunta pide una sola cifra, responde en una línea con esa
+cifra (el período ya va en el encabezado); no agregues piezas, histórico ni
+desgloses que nadie pidió.
 **Un solo valor o una tabla**: si el resultado es una sola cifra (una fila, una
 medida, sin desglose), contéstalo en una línea y NO escribas tabla; si hay más de
 una fila o varias medidas, respóndelo en tabla con las columnas de los datos. Si los datos
@@ -629,9 +635,10 @@ frase corta que lo conecte ("Ahora por taller:"), pero las cifras son siempre
 las de los Datos de este turno; no repitas las del contexto.
 
 Contexto de los campos de fecha, para no confundir la pregunta:
-  - fechaingreso           cuándo entró la pieza a la base
+  - fecha_hora_carga       cuándo se cargó la pieza al sistema (fecha de ingreso
+                           de los tableros de BI)
   - fecha_hora_recoleccion cuándo fue recolectada
-A "número de siniestros de este mes" le corresponde fechaingreso (las piezas
+A "número de siniestros de este mes" le corresponde fecha_hora_carga (las piezas
 que entraron este mes); a "piezas recolectadas este mes", fecha_hora_recoleccion.
 Si la pregunta no distingue, usa el que corresponde al sustantivo principal.
 
@@ -772,7 +779,7 @@ Con "detalle": true —o si la pregunta enumera otras categorías (inconsistente
 rezagadas, "todas las categorías")— van las dos tablas largas de abajo. Cómo
 repartirlas: mira el Spec; el período de cada agregación es el "between" que
 trae en su "filtros" (o en "filters" si es compartido). Between sobre
-fechaingreso → primera tabla; sobre fecha_hora_recoleccion → segunda tabla.
+fecha_hora_carga → primera tabla; sobre fecha_hora_recoleccion → segunda tabla.
 
 Primera tabla, título en una sola línea: "**Piezas por fecha de ingreso**".
 Filas, en este orden: "Ingresadas" (el alias total/ingresadas), recolectadas,
@@ -836,7 +843,7 @@ class OpenAICompatibleAdapter:
 		self.api_key = api_key
 		self.modelo = modelo
 		s = frappe.get_cached_doc("Molduplastic IA Settings")
-		# El proxy corta a los 120 s: un timeout mayor no sirve y el chat mostraría
+		# El proxy corta a los 240 s: un timeout mayor no sirve y el chat mostraría
 		# "Error de conexión". Se acota también la respuesta para que el modelo no
 		# gaste minutos (y crédito) escribiendo 8.000 tokens para un spec.
 		self.timeout = min(int(s.timeout_llm or 55), 55)
@@ -947,36 +954,79 @@ def _es_compleja(pregunta):
 	return len(pregunta) > 160 or any(s in p for s in senales)
 
 
+def intentos_respuesta():
+	"""Cuántas veces se intenta cada llamada al modelo (1 = sin reintento).
+
+	Vive en Molduplastic IA Settings (dueño, 2026-11-12: un segundo intento ante
+	un fallo del proveedor, como el corte del proxy del 2026-11-11). Un valor
+	inválido cae a 2, que es el comportamiento pedido.
+	"""
+	try:
+		valor = int(frappe.get_cached_doc("Molduplastic IA Settings").intentos_respuesta or 2)
+	except Exception:
+		return 2
+	return min(max(valor, 1), 5)
+
+
+def _sin_saldo(detalle):
+	"""El 402 no se arregla reintentando: la cuenta sigue sin fondos."""
+	return (
+		"402" in detalle
+		or "Insufficient account funds" in detalle
+		or "insufficient_quota" in detalle
+	)
+
+
+def _error_sin_saldo(detalle):
+	return LLMConfigError(
+		"El proveedor de IA no tiene saldo (HTTP 402). Recarga la cuenta en "
+		"Molduplastic IA Settings o configura otro proveedor con clave propia. "
+		f"Detalle: {detalle}"
+	)
+
+
 def _con_fallback(cadena, fn):
+	"""Recorre la cadena de proveedores y, si todo falla, la repite N intentos.
+
+	Un intento = una pasada completa por la cadena (un proveedor caído no
+	consume el intento del siguiente). Se reintenta solo lo que puede salir bien
+	al segundo intento: errores del proveedor, respuestas vacías o JSON
+	inválido. No se reintenta el 402 (sin saldo) ni el tiempo agotado del
+	análisis (reintentar lo gastaría otra vez).
+	"""
 	errores = []
-	for i, fila in enumerate(cadena):
-		try:
-			adapter = _adaptador(fila)
-			texto, uso, latencia, costo = fn(adapter)
-			return texto, {
-				"proveedor": fila.nombre,
-				"modelo": fila.modelo,
-				"tokens_entrada": uso["entrada"],
-				"tokens_salida": uso["salida"],
-				"latencia_ms": latencia,
-				"costo_estimado_usd": costo,
-				"es_fallback": i > 0,
-				"motivo_fallback": "; ".join(errores) if i > 0 else "",
-			}
-		except LLMTiempoAgotado:
-			raise
-		except LLMProviderError as e:
-			errores.append(str(e))
+	intentos = intentos_respuesta()
+	for intento in range(intentos):
+		sin_saldo = False
+		for i, fila in enumerate(cadena):
+			try:
+				adapter = _adaptador(fila)
+				texto, uso, latencia, costo = fn(adapter)
+				return texto, {
+					"proveedor": fila.nombre,
+					"modelo": fila.modelo,
+					"tokens_entrada": uso["entrada"],
+					"tokens_salida": uso["salida"],
+					"latencia_ms": latencia,
+					"costo_estimado_usd": costo,
+					"es_fallback": i > 0 or intento > 0,
+					"motivo_fallback": "; ".join(errores) if (i > 0 or intento > 0) else "",
+				}
+			except LLMTiempoAgotado:
+				raise
+			except LLMProviderError as e:
+				errores.append(str(e))
+				# Sin saldo: se sigue con el siguiente proveedor (puede tener clave
+				# propia), pero no se repite la pasada: la cuenta sigue sin fondos.
+				sin_saldo = sin_saldo or _sin_saldo(str(e))
+		if sin_saldo:
+			break
 	detalle = "; ".join(errores or ["sin configurar"])
 	# El caso más común en producción: la cuenta del proveedor se quedó sin
 	# saldo (HTTP 402). Se dice claro y con la acción, en vez de escupir el JSON
 	# del upstream en el chat.
-	if "402" in detalle or "Insufficient account funds" in detalle or "insufficient_quota" in detalle:
-		raise LLMConfigError(
-			"El proveedor de IA no tiene saldo (HTTP 402). Recarga la cuenta en "
-			"Molduplastic IA Settings o configura otro proveedor con clave propia. "
-			f"Detalle: {detalle}"
-		)
+	if _sin_saldo(detalle):
+		raise _error_sin_saldo(detalle)
 	raise LLMConfigError("Ningún proveedor disponible: " + detalle)
 
 
@@ -1533,27 +1583,47 @@ SYSTEM_EXPLAIN_ANALITICO = """MODO ANALÍTICO (activo en esta respuesta). Conser
 formato, encabezado, tablas y alcance de arriba. Además, la respuesta sigue esta
 estructura, en este orden:
 1. Respuesta directa: la cifra pedida, en una o dos líneas, después del encabezado.
-2. Lectura (solo si los Datos traen "analisis"): de dos a cuatro puntos cortos con
-   las cifras de "analisis": comparativo contra el período anterior y contra el
-   mismo período del año pasado (variacion_pp), brecha contra el objetivo, mejor y
-   peor grupo, concentración (participación de los grupos principales en el total) y
-   la tendencia. Si "comparativos" viene vacío, NO lo menciones: esta consulta no
-   compara períodos. Solo di "sin datos para comparar" cuando un comparativo trae
-   sin_datos o aparece en "sin_base" (la base de comparación no existe en la BD).
-3. Alertas (solo si "hallazgos" trae entradas de severidad media o alta): una línea
-   por hallazgo, con su "texto_base" tal cual. Los hallazgos de severidad baja no se
-   escriben como alerta.
-4. Sugerencias (solo si "sugerencias" trae entradas): una línea por sugerencia con
-   su "accion", tal cual viene. Si "sugerencias" está vacío, omite esta sección por
-   completo: no digas que no hay sugerencias.
+2. "Lo que veo" (solo si los Datos traen "analisis"): escribe ese título en su
+   propia línea y en negritas (**Lo que veo**), y debajo de dos a cuatro puntos
+   cortos con las cifras de "analisis": comparativo contra el período anterior y
+   contra el mismo período del año pasado (variacion_pp), brecha contra el
+   objetivo, mejor y peor grupo, concentración (participación de los grupos
+   principales en el total) y la tendencia. Si "comparativos" viene vacío,
+   NO lo menciones: esta consulta no compara períodos. Solo di "sin datos para
+   comparar" cuando un comparativo trae sin_datos o aparece en "sin_base" (la base
+   de comparación no existe en la BD).
+3. "Ojo con esto" (solo si "hallazgos" trae entradas de severidad media o alta):
+   ese título en negritas y una línea por hallazgo, con el contenido de su
+   "texto_base" redactado en tono cercano (puedes cambiar el orden de las palabras,
+   pero las cifras van exactamente como vienen). Los hallazgos de severidad baja no
+   se escriben como alerta.
+4. "Qué te sugiero" (solo si "sugerencias" trae entradas): ese título en negritas
+   y una línea por sugerencia con su "accion", tal cual viene. Si "sugerencias"
+   está vacío, omite esta sección por completo: no digas que no hay sugerencias.
+Tono: háblale a la persona como a un compañero de trabajo. Tutea, usa frases
+naturales y cercanas, y nada de tono de reporte ni títulos burocráticos. Los
+títulos de las secciones son exactamente "Lo que veo", "Ojo con esto" y "Qué te
+sugiero": nunca "Lectura", "Alertas" ni "Sugerencias".
 Si no hay nada que destacar (sin lectura posible, sin alertas), di UNA frase: "No
-hay hallazgos relevantes para este período." y nada más.
+veo nada fuera de lo normal en este período." y nada más (salvo la invitación final,
+si el prompt la pide).
 Reglas que tienen prioridad sobre cualquier instrucción anterior de este prompt:
 - Prohibido calcular: no sumes, restes, promedies, dividas ni saques porcentajes ni
   diferencias. Todas las cifras ya vienen calculadas en "analisis", "hallazgos" o
   "datos"; solo las citas, sin cambiarlas ni redondearlas de otra forma.
 - Interpretación: solo cualitativa y marcada como hipótesis ("podría deberse a…").
   Nunca presentes una causa como hecho ni inventes acciones fuera de "sugerencias".
+"""
+
+
+SYSTEM_EXPLAIN_SUGERENCIAS = """INVITACIÓN FINAL (OBLIGATORIA en esta respuesta): el prompt lista las
+preguntas que el usuario verá como botones justo debajo. Después de la última sección,
+agrega SIEMPRE una línea aparte que empiece exactamente con "Sugerencia:" y sea una
+invitación breve, cálida y natural a tocar esas preguntas. Varía la redacción en cada
+respuesta; no escribas las preguntas, no uses listas y no incluyas cifras. Sirve aunque
+la respuesta sea corta o no haya hallazgos. Ejemplos del tono (no los copies):
+"Sugerencia: ¿Quieres saber más? Toca alguna de estas preguntas." o "Sugerencia: Si te
+sirve, aquí abajo te dejo otras ideas para seguir."
 """
 
 
@@ -1579,11 +1649,14 @@ def _bloque_glosario(intencion):
 	]
 	for fila in entradas:
 		partes = [f"- {fila.termino}: {(fila.definicion or '').strip()}"]
-		if fila.umbral:
+		# Umbral, causas y acción solo viajan si el administrador escribió el
+		# contenido: el marcador de pendiente no es información de negocio y el
+		# modelo lo copiaba tal cual a la respuesta.
+		if fila.umbral and not es_pendiente(fila.umbral):
 			partes.append(f"Umbral: {fila.umbral.strip()}.")
-		if fila.causas:
+		if fila.causas and not es_pendiente(fila.causas):
 			partes.append(f"Causas típicas: {fila.causas.strip()}.")
-		if fila.accion:
+		if fila.accion and not es_pendiente(fila.accion):
 			partes.append(f"Acción recomendada: {fila.accion.strip()}.")
 		lineas.append(" ".join(partes))
 	return "\n".join(lineas)
@@ -1602,12 +1675,17 @@ def explain(
 	deadline=None,
 	analisis=None,
 	correccion=None,
+	sugerencias=None,
 ):
 	"""Genera la explicación conversacional. Devuelve (texto, info_log).
 
 	`universo_nombre` es la aseguradora (o "Todas las aseguradoras") que se
 	consultó: viaja en los datos para que el modelo no atribuya las cifras a la
 	aseguradora que aparezca en la pregunta.
+
+	`sugerencias` son las preguntas de seguimiento que el chat pintará como
+	botones: con ellas el modelo cierra con una invitación amable, que `ask()`
+	extrae y manda aparte (nunca un texto fijo).
 	"""
 	s = frappe.get_cached_doc("Molduplastic IA Settings")
 	cob = resultado.get("cobertura", {})
@@ -1760,6 +1838,16 @@ def explain(
 	# es exactamente el de siempre: el camino de respuesta breve no cambia.
 	analitico = modo == "Analítico"
 	sistema = SYSTEM_EXPLAIN + ("\n\n" + SYSTEM_EXPLAIN_ANALITICO if analitico else "")
+	if analitico and sugerencias:
+		# La invitación a tocar los botones la redacta el modelo (no un texto
+		# fijo): `ask()` la separa con `_extraer_invitacion`. Las preguntas van en
+		# el prompt (no en "datos") para que la invitación sea pertinente sin
+		# aflojar la verificación de cifras.
+		bloque = SYSTEM_EXPLAIN_SUGERENCIAS
+		bloque += "\nPreguntas que verá el usuario como botones: " + " | ".join(
+			str(p) for p in sugerencias
+		)
+		sistema += "\n\n" + bloque
 	mensajes = [{"role": "system", "content": sistema}]
 	contexto = _bloque_contexto(historial)
 	if contexto:

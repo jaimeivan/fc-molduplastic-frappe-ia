@@ -182,6 +182,22 @@ class TestDesdeAnalisisYConstruir(FrappeTestCase):
 		res = h.construir(self._analisis(), CFG, glosario)
 		self.assertEqual(res["sugerencias"], [])
 
+	def test_accion_pendiente_de_validacion_no_es_sugerencia(self):
+		# El parche deja el marcador cuando el negocio no ha escrito la acción:
+		# mostrarlo como recomendación fue el fallo del 2026-11-17.
+		glosario = [
+			{"termino": "No recolectadas", "accion": "[pendiente de validación del administrador]"}
+		]
+		res = h.construir(self._analisis(), CFG, glosario)
+		self.assertEqual(res["sugerencias"], [])
+
+	def test_es_pendiente_reconoce_el_marcador(self):
+		self.assertTrue(h.es_pendiente("[pendiente de validación del administrador]"))
+		self.assertTrue(h.es_pendiente("Pendiente de validación: causas"))
+		self.assertFalse(h.es_pendiente("Revisar los talleres con más pendientes."))
+		self.assertFalse(h.es_pendiente(""))
+		self.assertFalse(h.es_pendiente(None))
+
 	def test_texto_base_lleva_las_cifras_calculadas(self):
 		res = h.construir(self._analisis(), CFG, [])
 		texto = " ".join(x["texto_base"] for x in res["hallazgos"])

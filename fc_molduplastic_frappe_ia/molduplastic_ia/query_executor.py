@@ -12,6 +12,7 @@ agregaciones GROUP BY no son viables en Python.
 
 import frappe
 
+from fc_molduplastic_frappe_ia.molduplastic_ia.campos import UNIVERSO_PIEZA
 from fc_molduplastic_frappe_ia.molduplastic_ia.permissions import _alcance_efectivo, get_tenant_scope
 from fc_molduplastic_frappe_ia.molduplastic_ia.validate_spec import validar_spec
 
@@ -75,7 +76,7 @@ def _sin_filtro_aseguradora(spec):
 def _base_de_agg(agg, spec=None):
 	"""Base de fecha de una agregación: su propio "between" manda.
 
-	Las medidas del período por ingreso llevan `fechaingreso` en sus filtros; las
+	Las medidas del período por ingreso llevan `fecha_hora_carga` en sus filtros; las
 	que se miden por recolección (rezagadas, recolectadas del período) llevan
 	`fecha_hora_recoleccion`. Las que no traen ninguna usan el filtro global y
 	corren en la consulta principal.
@@ -86,19 +87,19 @@ def _base_de_agg(agg, spec=None):
 		return isinstance(f, list) and len(f) == 3 and str(f[0]).lower() == "between"
 
 	# La base es el campo cuyo BETWEEN define el período. Una rezagada trae
-	# fecha_hora_recoleccion between (su período) y fechaingreso "<" (el corte);
+	# fecha_hora_recoleccion between (su período) y fecha_hora_carga "<" (el corte);
 	# la unión de recolectadas trae los dos between y va por ingreso.
 	if es_between(filtros.get("fecha_hora_recoleccion")) and not es_between(
-		filtros.get("fechaingreso")
+		filtros.get("fecha_hora_carga")
 	):
 		return "recoleccion"
-	if filtros.get("fechaingreso") is not None:
+	if filtros.get("fecha_hora_carga") is not None:
 		return "ingreso"
 	# Un filtro de recolección que no sea un between no define el período (p.
 	# ej. "fecha_hora_recoleccion is null" de pendientes): va con el global.
 	# Sin fecha propia: manda el filtro global del spec.
 	glob = (spec or {}).get("filters") or {}
-	if glob.get("fechaingreso") is not None:
+	if glob.get("fecha_hora_carga") is not None:
 		return "ingreso"
 	if glob.get("fecha_hora_recoleccion") is not None:
 		return "recoleccion"
@@ -150,9 +151,9 @@ def _ejecutar_dos_bases(spec, user, alcance):
 	por_ingreso = [a for a in aggs if _base_de_agg(a, spec) != "recoleccion"]
 	por_recoleccion = [a for a in aggs if _base_de_agg(a, spec) == "recoleccion"]
 	principal = {**spec, "aggregations": por_ingreso}
-	periodo = _periodo_comun(por_ingreso, "fechaingreso")
+	periodo = _periodo_comun(por_ingreso, "fecha_hora_carga")
 	if periodo:
-		principal["filters"] = {**(spec.get("filters") or {}), "fechaingreso": periodo}
+		principal["filters"] = {**(spec.get("filters") or {}), "fecha_hora_carga": periodo}
 	aparte = {
 		**spec,
 		"filters": dict(spec.get("filters") or {}),
@@ -165,7 +166,7 @@ def _ejecutar_dos_bases(spec, user, alcance):
 		aparte["filters"]["fecha_hora_recoleccion"] = periodo_r
 	# La base de cada consulta la manda su propio período: el filtro global de
 	# la otra base no aplica (una rezagada ingresó antes del período).
-	aparte["filters"].pop("fechaingreso", None)
+	aparte["filters"].pop("fecha_hora_carga", None)
 	principal["filters"].pop("fecha_hora_recoleccion", None)
 	base = _ejecutar_spec(principal, user, alcance, con_cobertura=False)
 	otros = _ejecutar_spec(aparte, user, alcance, con_cobertura=False)
@@ -300,7 +301,7 @@ def _col(tabla, campo):
 	if tabla == "tabPieza" and campo == "mes":
 		# YYYY-MM del ingreso. El %% es obligatorio: frappe hace `query % args` y
 		# un %Y pelado rompe con ValueError.
-		return f"DATE_FORMAT(`{tabla}`.`fechaingreso`, '%%Y-%%m')"
+		return f"DATE_FORMAT(`{tabla}`.`fecha_hora_carga`, '%%Y-%%m')"
 	if tabla == "tabPieza" and campo == "pais_origen":
 		# País de origen de la marca (Marcas.cat_origen es Link a Catalogo Datos).
 		# Pieza.marca guarda "Nissan" y el maestro "NISSAN": se compara en mayúsculas.
@@ -373,6 +374,15 @@ def _construir_where(tabla, filters, doctype, user, alcance=None):
 	if tenant_where:
 		condiciones.append(f"({tenant_where})")
 		params.extend(tenant_params)
+	if doctype == "Pieza":
+		# Universo del asistente, igual al de las vistas VW_PIEZAS/vwPiezas de
+		# BI (2026-11-17): piezas recolectables con una ruta válida. Se inyecta
+		# aquí, no en cada spec, para que ninguna medida ni conteo se salga de
+		# la población publicada. `rutas_validas` es un contador y se compara
+		# como texto para que un índice pueda usarlo.
+		for campo, operador, valor in UNIVERSO_PIEZA:
+			condiciones.append(f"`{tabla}`.`{campo}` {operador} %s")
+			params.append(valor)
 	return (" AND ".join(condiciones) if condiciones else "1 = 1"), params
 
 
@@ -468,6 +478,51 @@ def _max_limit():
 	return int(frappe.get_cached_doc("Molduplastic IA Settings").max_limit or 500)
 
 
+# Índices analíticos de tabPieza: cubren las columnas que el asistente agrupa y
+# mide. Sin forzarlos, el optimizador prefiere los índices ordenados por la
+# dimensión del GROUP BY (idx_ia_aseg_taller, idx_pieza_taller_recolector) y
+# hace un row lookup por fila: en GNP la efectividad del año por taller tardaba
+# 400 s con índice cubriente disponible. Con FORCE INDEX baja a segundos.
+INDICE_INGRESO = "idx_ia_an_ing"
+INDICE_RECOLECCION = "idx_ia_an_rec"
+INDICE_MARCA = "idx_ia_an_marca"
+INDICE_RECOLECCION_MARCA = "idx_ia_an_rec_marca"
+DIMENSIONES_DE_MARCA = {"marca", "estadolocalidad", "region_pais", "pais_origen"}
+
+
+def _filtro_exacto(filters, campo):
+	"""True si el spec filtra el campo por igualdad o lista."""
+	cond = (filters or {}).get(campo)
+	if not isinstance(cond, list) or not cond:
+		return False
+	return str(cond[0]).lower() in ("=", "in")
+
+
+def _indice_forzado(tabla, spec, filters):
+	"""` FORCE INDEX (...)` para las agregaciones de Pieza, o cadena vacía.
+
+	Se aplica solo a agregaciones (no a listados de campos) y no cuando la
+	pregunta fija un taller por igualdad: ahí el índice por taller resuelve la
+	igualdad con un `ref`, que es mejor que recorrer el período.
+	"""
+	if tabla != "tabPieza" or not spec.get("aggregations"):
+		return ""
+	if _filtro_exacto(filters, "taller_asignado"):
+		return ""
+	dims = set(spec.get("group_by") or [])
+	if "siniestro" in dims:
+		# Ese índice no lleva las medidas: mejor que el optimizador elija.
+		return ""
+	if dims & DIMENSIONES_DE_MARCA and "fecha_hora_carga" in (filters or {}):
+		return f" FORCE INDEX (`{INDICE_MARCA}`)"
+	if dims & DIMENSIONES_DE_MARCA and "fecha_hora_recoleccion" in (filters or {}):
+		return f" FORCE INDEX (`{INDICE_RECOLECCION_MARCA}`)"
+	if "fecha_hora_recoleccion" in (filters or {}):
+		return f" FORCE INDEX (`{INDICE_RECOLECCION}`)"
+	return f" FORCE INDEX (`{INDICE_INGRESO}`)"
+
+
+
 def _limite_sql(spec):
 	"""LIMIT del SQL, ampliado cuando la medida es la efectividad.
 
@@ -498,19 +553,20 @@ def _limite_sql(spec):
 
 
 def _consultar(tabla, spec, where, params):
+	forzado = _indice_forzado(tabla, spec, spec.get("filters"))
 	if spec["aggregations"]:
 		select = [_select(tabla, g) for g in spec["group_by"]]
 		agg_params = []
 		for agg in spec["aggregations"]:
 			select.append(_agregacion(tabla, agg, agg_params))
-		sql = f"SELECT {', '.join(select)} FROM `{tabla}` WHERE {where}"
+		sql = f"SELECT {', '.join(select)} FROM `{tabla}`{forzado} WHERE {where}"
 		if spec["group_by"]:
 			sql += f" GROUP BY {', '.join(_col(tabla, g) for g in spec['group_by'])}"
 		# El SELECT va antes del WHERE en el SQL, así que sus parámetros van primero.
 		params = agg_params + params
 	else:
 		select = [_select(tabla, f) for f in spec["fields"]]
-		sql = f"SELECT {', '.join(select)} FROM `{tabla}` WHERE {where}"
+		sql = f"SELECT {', '.join(select)} FROM `{tabla}`{forzado} WHERE {where}"
 	if spec["order_by"]:
 		orden = []
 		for o in spec["order_by"]:
@@ -642,7 +698,7 @@ def _cobertura(tabla, spec, where, params, universo):
 					# medir la cobertura de id_estatus dentro de "id_estatus = 100"
 					# da 0% por construcción. El PERÍODO (between) sí se conserva:
 					# es lo que define la población; quitarlo devuelve el tenant
-					# entero (fechaingreso salía 92% en vez de 100%).
+					# entero (fecha_hora_carga salía 92% en vez de 100%).
 					for sub in _subcondiciones(cond):
 						if isinstance(sub, list) and sub and sub[0] == "between":
 							partes.append(_condicion_simple(tabla, campo_f, sub))

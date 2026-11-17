@@ -4,6 +4,18 @@ App Frappe (`Molduplastic IA`) sobre bench en `/home/frappe/frappe-bench`, site 
 
 > **Site:** el site de esta app es `molduplastic-ia.jarritohost.net`; el dominio `molduplastic.jarritohost.net` es otra instancia sin la app. En este bench el directorio del site se sigue llamando `molduplastic.jarritohost.net` (es lo que recibe `bench --site`, ver comandos abajo) y el HAProxy lo publica como `molduplastic-ia.jarritohost.net`.
 
+## Base de fecha y universo alineados con BI (2026-11-17)
+
+Decisión del dueño: el asistente mide lo mismo que los tableros (`VW_PIEZAS` / `vwPiezas`).
+
+- **El período de Pieza es `fecha_hora_carga`**, no `fechaingreso`. `fecha_hora_carga` es la fecha del lote de carga (todas las piezas de un lote comparten el segundo exacto) y `fechaingreso` es la fecha de negocio del archivo: difieren en el 91 % de las filas. Los specs guardados con `fechaingreso` se reescriben en `campos.normalizar_ingreso()` (se llama al inicio de `validar_spec` y en `ask()` antes de los completers), así que conversaciones y reportes viejos siguen abriendo. `fechaingreso` ya no aparece en la whitelist que ve el modelo.
+- **El universo de Pieza es el de la vista**: `recolectable = 1 AND rutas_validas = '1'` (una ruta válida; `rutas_validas` es un contador 0/1/2, no un flag). Se inyecta en `query_executor._construir_where`, no en cada spec, así que ninguna medida ni conteo se sale de la población publicada. Corta ~50 % del histórico (Afirme 110.564 de 218.917; GNP 905.678 de 1.911.119) y ~6 % en meses recientes.
+- **Cifras nuevas** (septiembre 2026): Afirme 5.434 ingresadas / 4.276 recolectadas / **74,0 %** (antes 4.064 / 4.527 / 111,4 %); GNP 37.488 / 53.964 / **143,9 %** (antes 41.082 / 53.424 / 130,0 %). A2 "inconsistentes recolectadas" queda en 0 de forma estructural: con fecha de carga, recolectar antes de cargar es imposible (0 de 489.812 filas de GNP en 2026).
+- **La efectividad conserva la fórmula A1 + A2 + B** sobre la fecha nueva (decisión del dueño); solo cambia la base.
+- **Reconciliación con BI**: `SELECT COUNT(*) FROM vwPiezas WHERE Aseguradora='GNP' AND FechaIngreso BETWEEN …` tiene que dar exactamente lo mismo que el asistente para ese mes y tenant. La vista sigue sin usarse como superficie de consulta (un `COUNT` de un mes tarda 73 s: `type=ALL`, el `cast(P.aseguradora as signed)` y los 6 `LEFT JOIN` impiden usar los índices); es el oráculo, no el motor.
+- Tests: `TestCampoDeIngresoBI` (`test_validate_spec.py`) y `TestUniversoBI` (`test_tenant.py`).
+- Las secciones siguientes de este documento describen el comportamiento **anterior** al 2026-11-17 (cifras medidas con `fechaingreso` y sin el universo de BI). Se conservan como historia; las definiciones vigentes son las de esta sección.
+
 ## Estructura (todo dentro de esta app)
 
 - `molduplastic_ia/`: `whitelist.py`, `validate_spec.py`, `query_executor.py`, `llm_factory.py`, `api.py` (endpoints), `permissions.py` (tenant).
@@ -65,7 +77,7 @@ Vocabulario registrado en el prompt: CDR=taller; **"no recolectadas en periodo" 
 - **Decisiones del dueño para el análisis (2026-11-10); fases 0, 1, 2 y 3 implementadas (ver "Análisis de respuestas"):**
   - Modo de respuesta (`Breve` / `Analítico`) solo en configuración del Asistente IA, nunca desde el cliente. Global + excepciones por intención; por defecto `Breve`.
   - Lectura analítica: primero por LLM; si el LLM falla, agota tiempo o no pasa la verificación de cifras, se usa plantilla de código.
-  - Si el análisis excede el presupuesto de tiempo (ahora 120 s), se entrega la respuesta breve con la nota de tiempo y, si se prevé que no alcanza, un aviso antes de empezar la consulta. Se registra en `IA API Log`.
+  - Si el análisis excede el presupuesto de tiempo (ahora 240 s), se entrega la respuesta breve con la nota de tiempo y, si se prevé que no alcanza, un aviso antes de empezar la consulta. Se registra en `IA API Log`.
   - Objetivo de efectividad (75 %) en configuración, no en código. La constante `OBJETIVO_EFECTIVIDAD` se elimina al migrar.
   - Mínimo de 50 piezas: aplica solo a hallazgos de porcentajes (efectividad, no entregadas, pendientes, no localizadas por taller), no a conteos ni listados.
   - Glosario de negocio: lo valida el administrador del Asistente IA. Entradas en `Borrador` / `Validado`; solo las `Validado` se inyectan en prompts.
@@ -109,27 +121,31 @@ Tests: los de esas instrucciones se borraron con ellas. `tests/test_validate_spe
 
 ## Rendimiento: índices de tabPieza
 
-Creados 2026-10-14 con `ALGORITHM=INPLACE, LOCK=NONE` (185s y 83s), fuera de `migrate` como los demás `idx_ia_aseg_*`. Recrearlos si se reinstala la BD:
+**Índices analíticos (2026-11-17).** Con la base de fecha y el universo de BI se crearon cinco índices cubrientes; van fuera de `migrate` y hay que recrearlos si se reinstala la BD. Se crearon con `ALGORITHM=INPLACE, LOCK=NONE`:
 
 ```sql
-ALTER TABLE tabPieza ADD INDEX idx_ia_aseg_fechaingreso_siniestro (aseguradora, fechaingreso, siniestro);
-ALTER TABLE tabPieza ADD INDEX idx_ia_aseg_fecharecoleccion (aseguradora, fecha_hora_recoleccion);
+-- Base ingreso: efectividad, resumen, precios, por taller / parte / modelo
+ALTER TABLE tabPieza ADD INDEX idx_ia_an_ing (aseguradora, fecha_hora_carga, recolectable,
+  rutas_validas, id_estatus, fecha_hora_recoleccion, taller_asignado, parte_pieza, modelo, preciovale);
+-- Base recolección: rezagadas y la pata B de "recolectadas"
+ALTER TABLE tabPieza ADD INDEX idx_ia_an_rec (aseguradora, fecha_hora_recoleccion, fecha_hora_carga,
+  recolectable, rutas_validas, id_estatus, taller_asignado, parte_pieza, preciovale);
+-- Marca / región (las dos bases)
+ALTER TABLE tabPieza ADD INDEX idx_ia_an_marca (aseguradora, fecha_hora_carga, recolectable,
+  rutas_validas, id_estatus, marca, estadolocalidad, fecha_hora_recoleccion, preciovale);
+ALTER TABLE tabPieza ADD INDEX idx_ia_an_rec_marca (aseguradora, fecha_hora_recoleccion, fecha_hora_carga,
+  recolectable, rutas_validas, id_estatus, marca, estadolocalidad, preciovale);
+-- Siniestros únicos por período
+ALTER TABLE tabPieza ADD INDEX idx_ia_aseg_carga_siniestro (aseguradora, fecha_hora_carga, siniestro);
 ```
 
-Antes de esto no había nada sobre `(aseguradora, fechaingreso)` ni `(aseguradora, fecha_hora_recoleccion)`: GNP caía en `type=ALL` sobre 3.2M filas (~140s por consulta). Ahora todas las lecturas por esas fechas van `range` con **`Using index`** (index-only).
+- **Límite de 3072 bytes por índice**: cada `varchar(140)` utf8mb4 cuenta 562 bytes aunque el valor real sea de 2 letras, así que un índice admite como máximo 5 columnas de texto. Por eso las dimensiones se reparten entre dos índices (taller/parte/modelo en uno; marca/estado en otro) y `tipo` (submarca), `id_plaza` y `tipo_carga` quedan sin cobertura (un año tarda ~15 s; un mes, <0,5 s).
+- **`FORCE INDEX` en el ejecutor** (`query_executor._indice_forzado`): el optimizador prefiere los índices ordenados por la dimensión del `GROUP BY` (`idx_ia_aseg_taller`, `idx_pieza_taller_recolector`) y hace un *row lookup* por fila. Medido en GNP, efectividad del año por taller: **703 s con el índice elegido por el optimizador, 3,2 s con `FORCE INDEX`**. Se aplica solo a agregaciones de Pieza y no cuando la pregunta fija un taller por igualdad.
+- **Medido (GNP, año 2026, antes → después)**: efectividad sin agrupar 50 s → **1,6 s**; efectividad por taller 821 s → **3,2 s**; efectividad por marca 34 s → **2,1 s**; efectividad por región 36 s → **3,4 s**; `sum(preciovale)` por marca 18,4 s → **1,4 s**; agrupar por región 18,7 s → **2,0 s**. Septiembre por taller: 0,34 s.
+- **Se eliminaron** `idx_aseguradora_fecha_carga`, `idx_ia_aseg_fechaingreso_siniestro` (el campo quedó deprecado) e `idx_ia_aseg_fecharecoleccion`: eran prefijos de los nuevos o ya no se usaban. `idx_ia_aseg_taller`, `idx_ia_aseg_recoleccion`, `idx_ia_aseg_creation` y `idx_ia_aseg_modified` se conservan (listados por tenant y barra de período). La tabla quedó en **1,7 GB de datos + 3,3 GB de índices**.
+- **Servidor**: el host de BD tiene 2 GB de RAM y el buffer pool sigue en **128 MB** (6 %); la recomendación es **1 GB** (`innodb_buffer_pool_size=1G`, `innodb_buffer_pool_instances=1`, `max_connections=50`, `tmp_table_size=64M`, `max_heap_table_size=64M`). Requiere reinicio en `mariadb-dev` y no se aplicó desde la app (el usuario de BD no tiene `SUPER` global). Los índices cubrientes ya evitan las lecturas aleatorias; el buffer pool es la mejora pendiente.
 
-Medido sobre el año en curso:
-
-| Consulta | Afirme | GNP |
-|---|---|---|
-| `count_distinct` sobre `siniestro` por `fechaingreso` | 0.16s | 1.14s |
-| `count(*)` por `fechaingreso` | 0.02s | 0.21s |
-| `count(*)` por `fecha_hora_recoleccion` | 0.05s | 0.19s |
-| `sum(preciovale)` por `fechaingreso` | 1.46s | 13.73s |
-
-**Ojo con `sum(preciovale)`**: no entra en el índice, así que solo va `Using index condition`, no `Using index`. El rango se estrecha (941k filas en vez de 3.2M de escaneo) pero hay que leer la fila para el precio. Sigue siendo el punto lento de cualquier consulta de montos; si molesta en GNP, la salida es un índice con `preciovale` al final, a costa de más escritura y disco.
-
-La tabla quedó en 3.6 GB con los cuatro `idx_ia_aseg_*`.
+Histórico (2026-10-14, con `fechaingreso`): `idx_ia_aseg_fechaingreso_siniestro` e `idx_ia_aseg_fecharecoleccion` se crearon con `ALGORITHM=INPLACE, LOCK=NONE` (185 s y 83 s) porque sin ellos GNP caía en `type=ALL` sobre 3,2 M filas (~140 s por consulta). Ese par quedó reemplazado por los índices analíticos de arriba.
 
 ## Gramática: `count_distinct`
 
@@ -678,6 +694,19 @@ En `asistente-ia`, el botón junto al título muestra el consumo del **mes en cu
 - El contador se actualiza al abrir el asistente y después de cada respuesta del endpoint `ask`; un fallo al consultar el total solo oculta el botón y no bloquea el chat.
 - Tests: `TestTokensUso` en `tests/test_api.py` (aislamiento tenant, admin global/filtro, aseguradora inválida, presets, personalizado y Guest).
 
+## Métricas por etapa en `IA API Log` (2026-11-13)
+
+La fila `explain` del turno (la última: Éxito, fallo del proveedor o "Código") desglosa el tiempo en cuatro campos de la sección **Métricas**:
+
+- `latencia_ms` — **LLM de esa fila**: la llamada al proveedor (la explicación; el spec se mide en su propia fila `generate_spec`). Etiqueta "Latencia LLM (ms)".
+- `latencia_construccion_ms` — código que completa y depura el spec y aplica el período: `_spec_sin_modelo` + cadena `_completar_*` + `_sanear_order_by` + `_aplicar_periodo`. No incluye la generación del spec por el modelo ni la validación (esa corre dentro de `ejecutar`).
+- `latencia_bd_ms` — suma de los `ejecutar()` del turno: validación del spec, SQL principal, conteo del universo y cobertura, más la re-ejecución del fallback al año, la ficha de taller (período anterior) y la comparación de dos períodos. El análisis de la fase 2 no entra: se mide en `latencia_analisis_ms`.
+- `latencia_total_ms` — tiempo de pared del turno, desde el inicio de `ask()` hasta antes de escribir las métricas (incluye LLM, construcción, BD, análisis, verificación y armado de la respuesta).
+
+Se escriben con `frappe.db.set_value` al final del `ask` (la fila `explain` ya existe), por eso la BD alcanza también las consultas derivadas que corren después de la explicación. Las ramas que cortan sin consulta (`Sensible`, `Fuera de alcance`, `Respuesta directa`) dejan los campos en 0. La evidencia (`tests/evidencia.py`) lleva las tres columnas en sus CSV. Tests: `TestMetricasDeEtapas` (`test_api.py`).
+
+**Consultas complementarias del análisis (2026-11-13).** Cada consulta derivada del modo analítico (`_medir_efectividad`, `_medir_grupos_efectividad` y el total de la concentración) deja **su propia fila** en `IA API Log` con `operacion = "complementary"`: `motivo_consulta` ("efectividad del período anterior", "efectividad por grupo", etc.), `consulta_spec` (spec JSON ejecutado), `latencia_bd_ms` (duración de esa consulta), `estado` Éxito/Fallo y el mismo `consulta_id` del turno. No llama al modelo: tokens y `latencia_ms` en 0. El agregado sigue en la fila `explain` (`consultas_complementarias` = cuántas, `latencia_analisis_ms` = tiempo total); esas filas **no** suman al `latencia_bd_ms` del turno. Si una consulta se omite por presupuesto no deja fila (no llegó a ejecutarse). Tests: `test_cada_consulta_derivada_deja_una_fila_complementary` (`test_analisis_ask.py`).
+
 ## Sugerencias del chat
 
 `Molduplastic IA Settings > Sugerencias` alimenta los chips que se pintan sobre la caja de texto de `asistente-ia`. `api.sugerencias()` devuelve solo las activas, en orden (lee el Single con `get_cached_doc`: únicamente salen los textos, no datos sensibles, así que un usuario de tenant también puede pedirlas). En `asistente_ia.js`, `cargarSugerencias()` crea un botón por sugerencia y el clic lanza la pregunta (`enviarPregunta`), no la copia al input; en la vista de Reportes se ocultan. El patch `sembrar_sugerencias_ia` deja las iniciales al instalar (`INICIALES`: la comparación agencias/talleres, "¿Qué tipo de pieza se recolecta menos?", "¿Cuáles son las 5 partes que menos se recolectan con al menos 100 piezas?", "¿Qué marcas tienen menor efectividad de recolección?", "¿Qué plaza tiene la efectividad más baja en la región Norte?", "muestra la efectividad por plaza de la region" —esta sin región a propósito: se interpreta como región + plaza, con el mes en curso—, "cuantas recolecciones pendientes hay por region", "¿Cuántas piezas tengo pendientes y cuánto valen?" y "¿Qué talleres concentran más piezas no entregadas?"), para que el chat no arranque sin chips; en un site ya instalado el patch no vuelve a correr, así que un chip nuevo se agrega en el Desk (o con el mismo `s.append`, que es idempotente por texto). Test: `TestSugerencias` (`test_api.py`).
@@ -690,7 +719,7 @@ En `asistente-ia`, el botón junto al título muestra el consumo del **mes en cu
 - `Molduplastic IA Settings`: `modo_respuesta` (Breve/Analítico, por defecto Breve), `modo_excepciones` (tabla `IA Modo Intencion`: intención → modo), `objetivo_efectividad` (75), `presupuesto_analisis_seg` (60, máximo 60), y `glosario` (tabla `IA Glosario`). `validate()` rechaza intenciones desconocidas, objetivo fuera de 0-100 y presupuesto fuera de 5-60.
 - `api._modo_de_respuesta(intencion)`: excepción por intención, si no el modo global, si falta o es inválido, Breve. `ask()` acepta `**_ignorados`: cualquier `modo` que mande el cliente se ignora.
 - La constante `OBJETIVO_EFECTIVIDAD` se eliminó. Ahora es `llm_factory.objetivo_efectividad()` (lee Settings; devuelve entero si el valor es entero). Los tests que stubean la configuración deben incluir `objetivo_efectividad`.
-- `explain(..., modo, intencion, deadline)`: con "Breve" el prompt es exactamente `SYSTEM_EXPLAIN` (regresión cero). Con "Analítico" agrega `SYSTEM_EXPLAIN_ANALITICO` (respuesta directa + lectura de dos a cuatro puntos, solo con cifras de Datos, sin calcular, hipótesis marcadas, sin sugerencias hasta tener hallazgos) y el glosario **solo** de entradas `Validado` de la intención.
+- `explain(..., modo, intencion, deadline)`: con "Breve" el prompt es exactamente `SYSTEM_EXPLAIN` (regresión cero). Con "Analítico" agrega `SYSTEM_EXPLAIN_ANALITICO` (respuesta directa + "Lo que veo" de dos a cuatro puntos, solo con cifras de Datos, sin calcular, hipótesis marcadas, sin sugerencias hasta tener hallazgos) y el glosario **solo** de entradas `Validado` de la intención.
 - **Presupuesto de tiempo**: el `deadline` acota el timeout de cada llamada (`OpenAICompatibleAdapter.chat(timeout=)` solo puede acortar el de la configuración). Si se agota, `LLMTiempoAgotado` (no prueba otro proveedor) y `ask()` entrega la breve con la nota `NOTA_TIEMPO_ANALISIS` y registra `analisis_omitido`. Un fallo del proveedor en modo analítico entrega la breve sin nota.
 - **Registro (`IA API Log`)**: `modo_respuesta` (Breve/Analítico/Código/N/A; "Código" = armada por el servidor, con una fila `explain` "explicación en código (sin modelo)"), `intencion` y `analisis_omitido`.
 - **Parche `sembrar_analisis_ia`** (idempotente): objetivo 75, presupuesto 60, modo Breve y 10 entradas de glosario en `Borrador`. Causas y acciones que no son del negocio van como "[pendiente de validación del administrador]".
@@ -726,16 +755,17 @@ Tests: `tests/test_analisis.py` (modo, objetivo, validación, glosario, timeout,
 
 ## Fase 3: presupuesto con aviso, verificación de cifras, playbooks (2026-11-11)
 
-**Presupuesto de tiempo: 120 s (doble).** `presupuesto_analisis_seg` (máximo 120, parche `subir_presupuesto_analisis` solo si sigue en 60). Se cuenta desde que llega la pregunta. El análisis y la lectura se detienen en `inicio + presupuesto − RESERVA_RESPALDO_SEG (35 s)`: esa reserva es para la respuesta breve de respaldo, que tiene su propia llamada y no puede pasar de los 120 s del proxy. La respuesta de respaldo recibe como límite `inicio + presupuesto`.
+**Presupuesto de tiempo: 240 s (doble del anterior, 2026-11-12).** `presupuesto_analisis_seg` (máximo 240, parche `doblar_presupuesto_analisis` solo si sigue en 120; el anterior `subir_presupuesto_analisis` lo llevó de 60 a 120). Se cuenta desde que llega la pregunta. El análisis y la lectura se detienen en `inicio + presupuesto − RESERVA_RESPALDO_SEG (35 s)`: esa reserva es para la respuesta breve de respaldo, que tiene su propia llamada y no puede pasar de los 240 s del proxy. La respuesta de respaldo recibe como límite `inicio + presupuesto`.
 
 **Aviso de tiempo (dos casos).**
 - *Va a llevar demasiado* (`TiempoPrevisto`): antes de cada consulta, `_Presupuesto.verificar()` estima su duración con la mayor observada en la respuesta (al inicio, la de la consulta principal). Si no cabe, no la empieza y muestra `NOTA_TIEMPO_PREVISTO` con los segundos estimados.
 - *Está llevando demasiado* (`TiempoAgotado` / `LLMTiempoAgotado`): el presupuesto se agota durante el análisis o la llamada. Muestra `NOTA_TIEMPO_ANALISIS`. Si tampoco alcanza para la breve, muestra `NOTA_SIN_TIEMPO` (la tabla del servidor sigue saliendo).
-- Límite conocido: una consulta en curso no se interrumpe. Si la estimación falla (rangos largos: la consulta anual de efectividad tardó más de lo previsto en GNP), la respuesta se alarga hasta ~120 s. El aviso y la reserva lo acotan, pero no lo eliminan.
+- Límite conocido: una consulta en curso no se interrumpe. Si la estimación falla (rangos largos: la consulta anual de efectividad tardó más de lo previsto en GNP), la respuesta se alarga hasta ~240 s. El aviso y la reserva lo acotan, pero no lo eliminan.
 
 **Verificación de cifras (`verificacion.py`, pura).** Cada número de la lectura analítica debe estar en los Datos (`datos`, `analisis`, `hallazgos`, título y período). Tolerancia de redondeo: 0.051 o 0.05% del valor. Orden de corrección: aprobada → reintento con `correccion` (el prompt nombra las cifras que no están) → recorte línea por línea (frases; renglones de tabla completos; se conserva el encabezado de dos líneas) → "Degradada": solo título y período, que arma el código. Nunca se devuelve una cifra que no esté en los Datos. El veredicto y lo quitado quedan en `IA API Log` (`verificacion`, y el detalle en `error`). Settings: `verificacion_cifras` (activa por defecto). **En modo breve no se modifica la respuesta**: solo se registra `Con cifras sin respaldo` o `Aprobada`.
 
 **Preguntas sugeridas (`playbooks.py`).** Registro por tipo de análisis (`efectividad`, `conteo`) con sus preguntas (máximo 3). Salen del playbook, nunca del modelo; `ask()` las devuelve en `preguntas_sugeridas` solo en modo analítico, con análisis, sin tiempo agotado y si `preguntas_sugeridas_activas` está activo. En el chat son botones que llaman a `enviarPregunta` (pasan por todos los controles). Test: cada pregunta cae en la familia efectividad (`mezcla_volumen_efectividad` cuenta como familia). Los conteos no tienen sugeridas porque sus preguntas no caen en una intención propia.
+**Texto previo a los botones (2026-11-13).** La invitación la redacta el mismo LLM de la respuesta analítica, no un texto fijo: cuando hay sugeridas, `ask()` se las pasa a `explain` (`sugerencias`), que las agrega al prompt y añade `SYSTEM_EXPLAIN_SUGERENCIAS`, donde pide cerrar siempre con una línea que empiece por `Sugerencia:`. Las preguntas van en el prompt (no en `datos`) para no aflojar la verificación de cifras. Después de la verificación, `api._extraer_invitacion` la quita del texto y la devuelve en `texto_sugerencias`; el chat la pinta en `.ia-sugeridas-intro`, arriba de los botones (que no cambian). Sin marcador no hay invitación (nunca se inventa una frase). No suma una llamada al modelo ni una fila al log. Verificado con el modelo real (DeepSeek eco): dos corridas dieron invitaciones distintas ("si quieres seguir hurgando…", "si quieres, abajo te dejo…") y la extracción dejó la respuesta sin la línea. Tests: `TestExtraerInvitacion` y `TestPreguntasSugeridas` (`test_fase3.py`), y el bloque del prompt en `test_analisis.py`.
 
 **Evaluación de calidad.** `evaluacion/preguntas_evaluacion.csv` (12 preguntas, columnas para revisor: `analiza`, `sugiere_con_sustento`, `inventa_cifras`) y `evaluacion/LEEME.md`. No se corre sola.
 
@@ -747,9 +777,33 @@ Tests: `tests/test_analisis.py` (modo, objetivo, validación, glosario, timeout,
 
 ## Ajustes del 2026-11-11 (cierre de fases 1-3)
 
-- **Proxy a 120 s.** `config/nginx.conf` (`location @webserver`): `proxy_read_timeout 120` y `proxy_send_timeout 120` (antes solo la lectura). Validado con `nginx -t` y recargado. La tabla de tiempos de espera (balanceador externo, nginx, gunicorn `-t 6000`, presupuesto, reserva, LLM) está en `README.md`. **Si la app pasa a otro servidor, revisar esa tabla antes de activar el modo analítico.**
+- **Proxy a 240 s (2026-11-12; antes 120).** `config/nginx.conf` (`location @webserver`): `proxy_read_timeout 240` y `proxy_send_timeout 240`. Validado con `nginx -t` y recargado. La tabla de tiempos de espera (balanceador externo, nginx, gunicorn `-t 6000`, presupuesto, reserva, LLM) está en `README.md`. **Si la app pasa a otro servidor, revisar esa tabla antes de activar el modo analítico.**
 - **Rangos de más de un mes: solo breve con aviso, con el tope configurable.** `dias_maximos_analisis` en `Molduplastic IA Settings` (default 31, válido 1–366; un valor corrupto cae a 31 y uno mayor se recorta a 366) lo lee `api._dias_maximos_analisis()`, y `_periodo_es_largo(spec)` compara el rango del spec contra esos días. El aviso lo arma `_nota_periodo_largo()`: con 31 dice el texto original `NOTA_PERIODO_LARGO`; con otro valor nombra los días configurados. En modo Analítico, un periodo más largo no ejecuta el análisis ni la lectura (aplica también a las respuestas que arma el código). Parche `sembrar_dias_maximos_analisis` (fija 31 si el Single no lo tiene guardado). Tests en `test_fase3.TestPeriodoLargo` (umbral por configuración, 45 días con tope 60, aviso con los días, respaldo de valor inválido y validación 1–366).
 - **Revisión del set de evaluación en el Desk.** DocType `IA Evaluacion` (solo System Manager), botón *Preguntar al asistente* (`evaluacion.preguntar_evaluacion`) que usa el universo de la fila y el modo configurado, y resumen con `evaluacion.resumen_evaluacion`. Carga inicial desde `evaluacion/preguntas_evaluacion.csv` (parche `sembrar_evaluacion_ia`, idempotente). Ver `evaluacion/LEEME.md`.
 - **Permiso de evaluación con chequeo explícito.** `frappe.only_for` no comprueba nada cuando corre en pruebas (`flags.in_test`), así que `evaluacion._solo_administradores` revisa `System Manager` en los roles. Usar el mismo patrón en código nuevo que deba probar permisos.
 - Pruebas: `tests/test_evaluacion.py` (permisos, revisión, carga idempotente, resumen) y `test_fase3.TestPeriodoLargo`.
 
+## Ajustes del 2026-11-12: presupuesto 240 s, etapas en el chat y reintentos
+
+- **Presupuesto de tiempo al doble (240 s).** `presupuesto_analisis_seg` pasa a 240 y `PRESUPUESTO_MAXIMO_SEG` en `doctype/molduplastic_ia_settings/molduplastic_ia_settings.py` también: un valor mayor se recorta en `api._presupuesto_analisis_seg()`. Parche `doblar_presupuesto_analisis` (solo sube si sigue en 120; un valor elegido por el administrador se respeta). nginx (`proxy_read_timeout`/`proxy_send_timeout`) queda en 240 y la tabla de tiempos de `README.md` se actualizó. **Ojo:** el balanceador externo (`10.128.0.3`) cortó una petición a los ~50 s el 2026-11-11; ese límite no está en este servidor y hay que subirlo allá, si no el presupuesto de 240 s no sirve.
+- **Etapas visibles mientras se espera.** `api.ETAPAS_PROGRESO` fija los cinco textos (`pregunta` "Analizando la pregunta…", `consulta` "Construyendo la consulta…", `datos` "Consultando la información…", `analisis` "Analizando la respuesta…", `respuesta` "Construyendo la respuesta…"). `ask()` recibe `progreso_id` (solo `isalnum`, ≤40 chars: es una llave de caché, no un dato del cliente) y escribe la etapa con `_marcar_progreso` en `molduplastic_ia:progreso:<id>` con TTL `PROGRESO_TTL_SEG = 900`. El endpoint whitelisteado `api.progreso(consulta_id)` devuelve `{"etapa", "texto"}` y **nunca expone datos de la consulta ni del usuario**; si la caché falla o el id no existe devuelve vacío. El JS crea el `.ia-progreso` dentro del loader, manda `progreso_id` en el `ask` y consulta `progreso` cada 1.2 s; `clearInterval` va en `.then()` y en `.fail()`. Es informativo: un fallo del sondeo no afecta la respuesta. `progreso` está en `frappe.whitelisted` (test en `TestEndpointsWhitelisted`) y los helpers no.
+- **Segundo intento cuando el proveedor falla.** `llm_factory.intentos_respuesta()` lee `intentos_respuesta` de `Molduplastic IA Settings` (default 2, acotado 1–5). `_con_fallback` repite la **cadena completa de proveedores** hasta N intentos; un intento = una pasada entera, así un proveedor caído no consume el intento del siguiente. Se reintenta lo que puede salir bien al segundo intento (error del proveedor, respuesta vacía, JSON inválido/truncado). **No** se reintenta el 402/`insufficient_quota` (`_sin_saldo` → `_error_sin_saldo`, el mensaje de recarga sigue igual) ni `LLMTiempoAgotado` (reintentarlo gastaría otra vez el presupuesto). Cuando un reintento sale bien, `es_fallback` queda en True y `motivo_fallback` lleva el error anterior. Parche `sembrar_intentos_respuesta` (2 si el Single no lo tiene guardado); **va antes** de `doblar_presupuesto_analisis` en `patches.txt`, porque el primer `save()` del Single necesita el campo obligatorio lleno.
+- **Validación del campo nuevo.** Un campo obligatorio recién agregado llega vacío (0) en el Single ya guardado, así que `validate()` acepta 0 como "sin sembrar" y solo rechaza fuera de rango (1–5). Tests: `test_llm.TestReintentos` (5 casos), `test_api.TestProgreso` (4) y `test_fase3.TestPresupuesto` (240, rechazo de 241, tope).
+
+
+## Ajustes del 2026-11-13: tono humano y aviso de cobertura
+
+- **Títulos conversacionales en el modo analítico.** `SYSTEM_EXPLAIN_ANALITICO` ya no pide "Lectura"/"Alertas"/"Sugerencias": pide **"Lo que veo"**, **"Ojo con esto"** y **"Qué te sugiero"**, con un tono de conversación ("háblale a la persona como a un compañero de trabajo", tuteo, sin tono de reporte). `SYSTEM_EXPLAIN` (modo breve) lleva la misma indicación de tono, sin cambiar el formato (encabezado, tablas y brevedad siguen igual). Los hallazgos se pueden redactar con palabras propias, pero las cifras van exactas: la verificación de la fase 3 las revisa. Tests: `test_prompt_analitico_usa_titulos_conversacionales` y `test_los_dos_prompts_piden_un_tono_humano` (`test_analisis.py`).
+- **"Sin datos en el alcance de tu aseguradora." ya no aparece debajo de una respuesta con cifras.** Ese texto era el respaldo del JS cuando la cobertura no traía `universo`. Las respuestas de efectividad llegan con `cobertura = {}` (ruta de dos bases), así que el chat lo pintaba bajo una tabla correcta (conversación `pe2dfdlc6a`). Ahora `textoCobertura` devuelve vacío si no hay `universo` o si ningún campo está por debajo del 100%, y el aviso, cuando aplica, se escribe en tono humano ("En Estatus, 90% de los registros trae el dato."). Al recargar la conversación no salía porque `cobertura_json` se guarda vacío: era un fallo solo de la respuesta en vivo. `NOMBRES_COLUMNA` del JS ganó `id_estatus`, `estadolocalidad`, `marca`, `siniestro` y `pais_origen` para que ese aviso no muestre nombres de columna.
+
+## Glosario: el texto de relleno no es contenido (2026-11-17)
+
+En la conversación `bgb0j12hqj` ("¿Las agencias recolectan mejor que los talleres?", GNP, octubre 2026) el chat mostró **"[pendiente de validación del administrador]"** debajo de "Qué te sugiero": el hallazgo `caida_vs_periodo_anterior` (149.0 % → 136.3 %) resolvió el término "Efectividad", cuya fila estaba en `Validado` con el marcador que dejó el parche. El prompt pedía copiar la acción "tal cual viene", así que el modelo copió el relleno y la verificación de cifras lo aprobó (no es una cifra).
+
+- **Regla:** `Validado` significa que el administrador **escribió** el contenido de negocio. El marcador `[pendiente de validación del administrador]` nunca es contenido: no se inyecta, no se sugiere y no se muestra.
+- **Guardia de lectura** (`hallazgos.py`): `MARCADOR_PENDIENTE` y `es_pendiente()`; `construir()` ignora las acciones pendientes, así que no genera sugerencia aunque la fila esté en `Validado`.
+- **Guardia del prompt** (`llm_factory._bloque_glosario()`): el umbral, las causas y la acción solo viajan si el administrador los escribió; con el marcador se manda únicamente el término y su definición (los separadores "Causas típicas"/"Acción recomendada" tampoco aparecen).
+- **Guardia al guardar** (`MolduplasticIA Settings._rechazar_validado_sin_contenido()`): se rechaza el paso de `Borrador` a `Validado` si algún campo sigue con el marcador, con un mensaje que nombra el campo. Una fila que **ya estaba** en `Validado` se puede seguir guardando, para que el administrador la corrija sin quedar bloqueado al guardar el resto de la configuración.
+- **Consecuencia esperada:** mientras las causas/acciones sigan pendientes, el asistente **no da sugerencias** para esos términos (mejor nada que un relleno); las cifras y los hallazgos salen igual. La decisión de qué decir es del dueño: el código no inventa causas ni acciones.
+- **Borrador de negocio:** `glosario/borrador_glosario.md` propone causas, acciones y umbrales para las seis entradas incompletas (Efectividad, No recolectadas, Pieza no localizada, Pendientes, Inconsistente y Siniestro) y lista las cinco decisiones que requieren al dueño. Es un documento: **nada se escribe en la BD** por esta vía.
+- Tests: `test_accion_pendiente_de_validacion_no_es_sugerencia`, `test_es_pendiente_reconoce_el_marcador` (`test_hallazgos.py`), `test_el_marcador_de_pendiente_no_viaja_al_prompt`, `test_marcar_validado_con_el_texto_pendiente_no_se_guarda` y `test_una_entrada_que_ya_estaba_validada_se_puede_seguir_guardando` (`test_analisis.py`).

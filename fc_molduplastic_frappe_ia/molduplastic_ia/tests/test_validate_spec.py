@@ -436,36 +436,36 @@ class TestComparacionEntreCampos(FrappeTestCase):
 
 	def test_comparacion_entre_campos_valida(self):
 		s = validar_spec(
-			spec_base(filters={"fecha_hora_recoleccion": [">", {"campo": "fechaingreso"}]})
+			spec_base(filters={"fecha_hora_recoleccion": [">", {"campo": "fecha_hora_carga"}]})
 		)
 		self.assertEqual(
-			s["filters"]["fecha_hora_recoleccion"], [">", {"campo": "fechaingreso"}]
+			s["filters"]["fecha_hora_recoleccion"], [">", {"campo": "fecha_hora_carga"}]
 		)
 
 	def test_mes_distinto_valido(self):
 		s = validar_spec(
 			spec_base(
 				filters={
-					"fecha_hora_recoleccion": ["mes_distinto", {"campo": "fechaingreso"}]
+					"fecha_hora_recoleccion": ["mes_distinto", {"campo": "fecha_hora_carga"}]
 				}
 			)
 		)
 		self.assertEqual(
 			s["filters"]["fecha_hora_recoleccion"],
-			["mes_distinto", {"campo": "fechaingreso"}],
+			["mes_distinto", {"campo": "fecha_hora_carga"}],
 		)
 
 	def test_mes_igual_valido(self):
 		s = validar_spec(
 			spec_base(
 				filters={
-					"fecha_hora_recoleccion": ["mes_igual", {"campo": "fechaingreso"}]
+					"fecha_hora_recoleccion": ["mes_igual", {"campo": "fecha_hora_carga"}]
 				}
 			)
 		)
 		self.assertEqual(
 			s["filters"]["fecha_hora_recoleccion"],
-			["mes_igual", {"campo": "fechaingreso"}],
+			["mes_igual", {"campo": "fecha_hora_carga"}],
 		)
 
 	def test_mes_igual_necesita_referencia(self):
@@ -473,7 +473,7 @@ class TestComparacionEntreCampos(FrappeTestCase):
 			validar_spec(spec_base(filters={"fecha_hora_recoleccion": ["mes_igual"]}))
 		with self.assertRaises(SpecInvalida):
 			validar_spec(
-				spec_base(filters={"fecha_hora_recoleccion": ["mes_igual", "fechaingreso"]})
+				spec_base(filters={"fecha_hora_recoleccion": ["mes_igual", "fecha_hora_carga"]})
 			)
 
 	def test_referencia_con_clave_corrompida_se_normaliza(self):
@@ -483,20 +483,20 @@ class TestComparacionEntreCampos(FrappeTestCase):
 			s = validar_spec(
 				spec_base(
 					filters={
-						"fecha_hora_recoleccion": ["mes_igual", {clave: "fechaingreso"}]
+						"fecha_hora_recoleccion": ["mes_igual", {clave: "fecha_hora_carga"}]
 					}
 				)
 			)
 			self.assertEqual(
 				s["filters"]["fecha_hora_recoleccion"],
-				["mes_igual", {"campo": "fechaingreso"}],
+				["mes_igual", {"campo": "fecha_hora_carga"}],
 			)
 
 	def test_clave_ajena_no_es_referencia(self):
 		with self.assertRaises(SpecInvalida):
 			validar_spec(
 				spec_base(
-					filters={"fecha_hora_recoleccion": ["mes_igual", {"otro": "fechaingreso"}]}
+					filters={"fecha_hora_recoleccion": ["mes_igual", {"otro": "fecha_hora_carga"}]}
 				)
 			)
 
@@ -528,7 +528,7 @@ class TestComparacionEntreCampos(FrappeTestCase):
 	def test_referencia_solo_en_comparacion(self):
 		"""between/in/like/is no admiten referencias: solo literales."""
 		for cond in (
-			["between", {"campo": "fechaingreso"}, "2026-10-31"],
+			["between", {"campo": "fecha_hora_carga"}, "2026-10-31"],
 			["in", [{"campo": "marca"}]],
 			["like", {"campo": "marca"}],
 			["is", {"campo": "marca"}],
@@ -542,8 +542,8 @@ class TestComparacionEntreCampos(FrappeTestCase):
 				filters={
 					"fecha_hora_recoleccion": [
 						["between", "2026-10-01 00:00:00", "2026-10-16 23:59:59"],
-						[">", {"campo": "fechaingreso"}],
-						["mes_distinto", {"campo": "fechaingreso"}],
+						[">", {"campo": "fecha_hora_carga"}],
+						["mes_distinto", {"campo": "fecha_hora_carga"}],
 					]
 				}
 			)
@@ -603,7 +603,7 @@ class TestEfectividadPorDimension(FrappeTestCase):
 		return spec_base(
 			fields=[],
 			filters={
-				"fechaingreso": ["between", "2026-10-01 00:00:00", "2026-10-19 23:59:59"],
+				"fecha_hora_carga": ["between", "2026-10-01 00:00:00", "2026-10-19 23:59:59"],
 				"recolectable": ["=", 1],
 			},
 			aggregations=[
@@ -615,8 +615,8 @@ class TestEfectividadPorDimension(FrappeTestCase):
 					"filtros": {
 						"id_estatus": ["=", 100],
 						"fecha_hora_recoleccion": [
-							["mes_igual", {"campo": "fechaingreso"}],
-							[">=", {"campo": "fechaingreso"}],
+							["mes_igual", {"campo": "fecha_hora_carga"}],
+							[">=", {"campo": "fecha_hora_carga"}],
 						],
 					},
 				},
@@ -808,6 +808,83 @@ class TestFiltroAseguradora(FrappeTestCase):
 	def test_docname_y_referencia_a_campo_intactos(self):
 		self.assertEqual(_valores_con_docname(["=", "6"], self.MAPA), ["=", "6"])
 		self.assertEqual(
-			_valores_con_docname(["mes_igual", {"campo": "fechaingreso"}], self.MAPA),
-			["mes_igual", {"campo": "fechaingreso"}],
+			_valores_con_docname(["mes_igual", {"campo": "fecha_hora_carga"}], self.MAPA),
+			["mes_igual", {"campo": "fecha_hora_carga"}],
 		)
+
+
+class TestCampoDeIngresoBI(FrappeTestCase):
+	"""El período de Pieza es `fecha_hora_carga` (2026-11-17).
+
+	El dueño alineó el asistente con los tableros de BI. Los specs guardados con
+	el campo viejo (`fechaingreso`) tienen que seguir funcionando: el ejecutor
+	los reescribe antes de validar.
+	"""
+
+	def test_normaliza_el_campo_viejo_en_todo_el_spec(self):
+		listado = validar_spec(
+			{
+				"doctype": "Pieza",
+				"fields": ["fechaingreso"],
+				"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+				"aggregations": [],
+				"group_by": [],
+				"order_by": [{"field": "fechaingreso", "dir": "desc"}],
+				"limit": 10,
+			}
+		)
+		self.assertNotIn("fechaingreso", listado["filters"])
+		self.assertIn("fecha_hora_carga", listado["filters"])
+		self.assertEqual(listado["fields"], ["fecha_hora_carga"])
+		self.assertEqual(listado["order_by"][0]["field"], "fecha_hora_carga")
+
+		agregado = validar_spec(
+			{
+				"doctype": "Pieza",
+				"fields": [],
+				"filters": {"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+				"aggregations": [
+					{
+						"func": "count",
+						"field": "*",
+						"alias": "n",
+						"filtros": {
+							"fechaingreso": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"],
+							"fecha_hora_recoleccion": [
+								["mes_igual", {"campo": "fechaingreso"}],
+								[">=", {"campo": "fechaingreso"}],
+							],
+						},
+					}
+				],
+				"group_by": ["mes"],
+				"order_by": [],
+				"limit": 10,
+			}
+		)
+		self.assertIn("fecha_hora_carga", agregado["filters"])
+		self.assertIn("fecha_hora_carga", agregado["aggregations"][0]["filtros"])
+		refs = agregado["aggregations"][0]["filtros"]["fecha_hora_recoleccion"]
+		self.assertEqual(refs[0], ["mes_igual", {"campo": "fecha_hora_carga"}])
+		self.assertEqual(refs[1], [">=", {"campo": "fecha_hora_carga"}])
+
+	def test_no_toca_los_specs_de_recoleccion(self):
+		spec = validar_spec(
+			{
+				"doctype": "Recoleccion",
+				"fields": [],
+				"filters": {"fecha_inicio": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+				"aggregations": [{"func": "count", "field": "*", "alias": "n"}],
+				"group_by": [],
+				"order_by": [],
+				"limit": 10,
+			}
+		)
+		self.assertEqual(spec["filters"]["fecha_inicio"][0], "between")
+
+	def test_el_modelo_ya_no_ve_fechaingreso(self):
+		from fc_molduplastic_frappe_ia.molduplastic_ia.whitelist import get_whitelist
+
+		campos = get_whitelist()["Pieza"]["fields"]
+		self.assertNotIn("fechaingreso", campos)
+		self.assertIn("fecha_hora_carga", campos)
