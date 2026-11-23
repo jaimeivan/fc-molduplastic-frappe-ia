@@ -23,7 +23,7 @@ GLOSARIO_INICIAL = [
 	{
 		"intencion": "recolectadas",
 		"termino": "Recolectadas",
-		"definicion": "Recolectadas en periodo + inconsistentes recolectadas + rezagadas recolectadas (estatus 100, recolectable = 1).",
+		"definicion": "Recolectadas en periodo (carga y recolección dentro del período) + inconsistentes recolectadas (estatus 100, recolectable = 1). Las rezagadas recolectadas no se suman.",
 		"umbral": "",
 		"causas": "",
 		"accion": "",

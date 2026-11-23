@@ -4,6 +4,7 @@ El LLM está simulado (mocks): estas pruebas no contestan con el modelo real.
 Las consultas derivadas sí van a la base cuando no están parcheadas.
 """
 
+import json
 import time
 from unittest.mock import patch
 
@@ -35,7 +36,7 @@ class ConfigFase3(FrappeTestCase):
 		s = frappe.get_doc(SETTINGS)
 		self.previo = {k: s.get(k) for k in (
 			"modo_respuesta", "verificacion_cifras", "preguntas_sugeridas_activas",
-			"presupuesto_analisis_seg", "dias_maximos_analisis")}
+			"presupuesto_analisis_seg", "dias_maximos_analisis", "modo_sugerencias")}
 		self.addCleanup(self._restaurar)
 		frappe.set_user(USUARIO_GNP)
 		self.addCleanup(frappe.set_user, "Administrator")
@@ -209,10 +210,12 @@ class TestVerificacionEnAsk(ConfigFase3):
 class TestPreguntasSugeridas(ConfigFase3):
 	@patch.object(api, "generate_spec", return_value=(SPEC, INFO))
 	def test_analitico_con_analisis_trae_preguntas_del_playbook(self, _spec):
+		self.configurar(modo_sugerencias="Playbook")
 		with patch.object(api, "_analisis_completo", return_value=PACK), \
 			patch.object(api, "explain", return_value=("El total es 80.0%.", _info())) as mock_exp:
 			res = api.ask("¿cuántas piezas hay?")
 		self.assertEqual(res["preguntas_sugeridas"], playbooks.preguntas_para("efectividad"))
+		self.assertEqual(res["sugerencias_modo"], "Playbook")
 		# Las sugeridas viajan al prompt: la invitación la escribe el modelo.
 		self.assertEqual(
 			mock_exp.call_args.kwargs.get("sugerencias"),
@@ -280,7 +283,262 @@ class TestPlaybooks(FrappeTestCase):
 		self.assertEqual(playbooks.preguntas_para("conteo"), [])
 
 
+PACK_HALLAZGOS = {
+	"analisis": {"tipo": "efectividad"},
+	"hallazgos": [{"codigo": "caida_vs_periodo_anterior", "severidad": "media"}],
+	"sugerencias": [],
+	"consultas": 1,
+	"latencia_ms": 5,
+}
+
+
+class TestModosDeSugerencias(ConfigFase3):
+	"""Modo configurable (Settings) y trazabilidad del chip (dueño, 2026-11-23)."""
+
+	def test_hallazgos_deriva_preguntas_y_completa(self):
+		self.configurar(modo_sugerencias="Hallazgos + catálogo")
+		with patch.object(api, "generate_spec", return_value=(SPEC, INFO)), \
+			patch.object(api, "_analisis_completo", return_value=PACK_HALLAZGOS), \
+			patch.object(api, "explain", return_value=("Texto.", _info())) as mock_exp:
+			res = api.ask("¿cuántas piezas hay?")
+		self.assertEqual(res["sugerencias_modo"], "Hallazgos + catálogo")
+		self.assertEqual(
+			res["preguntas_sugeridas"][0],
+			playbooks.REGLAS_DE_HALLAZGO["caida_vs_periodo_anterior"],
+		)
+		self.assertLessEqual(len(res["preguntas_sugeridas"]), playbooks.MAX_SUGERIDAS)
+		self.assertIn(
+			playbooks.REGLAS_DE_HALLAZGO["caida_vs_periodo_anterior"],
+			mock_exp.call_args.kwargs.get("sugerencias"),
+		)
+
+	def test_modelo_libre_lee_el_bloque_y_lo_quita(self):
+		self.configurar(modo_sugerencias="Modelo libre")
+		texto = (
+			"El total es 80.0%.\n\n"
+			"[SUGERENCIAS]¿Qué talleres tienen la efectividad más baja? | "
+			"¿Cuál es la efectividad por región?[/SUGERENCIAS]\n\n"
+			"Sugerencia: ¿Seguimos?"
+		)
+		with patch.object(api, "generate_spec", return_value=(SPEC, INFO)), \
+			patch.object(api, "_analisis_completo", return_value=PACK), \
+			patch.object(api, "explain", return_value=(texto, _info())) as mock_exp:
+			res = api.ask("¿cuántas piezas hay?")
+		self.assertTrue(mock_exp.call_args.kwargs.get("sugerencias_libres"))
+		self.assertNotIn("[SUGERENCIAS]", res["respuesta"])
+		self.assertEqual(
+			res["preguntas_sugeridas"],
+			[
+				"¿Qué talleres tienen la efectividad más baja?",
+				"¿Cuál es la efectividad por región?",
+			],
+		)
+		self.assertEqual(res["sugerencias_modo"], "Modelo libre")
+		self.assertEqual(
+			res["sugerencias_id"],
+			api._sugerencias_id("Modelo libre", res["preguntas_sugeridas"]),
+		)
+
+	def test_modelo_libre_descarta_invalidas(self):
+		self.configurar(modo_sugerencias="Modelo libre")
+		texto = (
+			"El total es 80.0%.\n\n"
+			"[SUGERENCIAS]¿Por qué cayó la efectividad? | ¿Y con 500 piezas? | "
+			"¿Qué talleres tienen la efectividad más baja?[/SUGERENCIAS]"
+		)
+		with patch.object(api, "generate_spec", return_value=(SPEC, INFO)), \
+			patch.object(api, "_analisis_completo", return_value=PACK), \
+			patch.object(api, "explain", return_value=(texto, _info())):
+			res = api.ask("¿cuántas piezas hay?")
+		self.assertEqual(
+			res["preguntas_sugeridas"], ["¿Qué talleres tienen la efectividad más baja?"]
+		)
+		self.assertEqual(res["sugerencias_modo"], "Modelo libre")
+
+	def test_modelo_sin_bloque_usa_respaldo_del_playbook(self):
+		self.configurar(modo_sugerencias="Modelo libre")
+		with patch.object(api, "generate_spec", return_value=(SPEC, INFO)), \
+			patch.object(api, "_analisis_completo", return_value=PACK), \
+			patch.object(api, "explain", return_value=("El total es 80.0%.", _info())):
+			res = api.ask("¿cuántas piezas hay?")
+		self.assertEqual(res["sugerencias_modo"], "Playbook")
+		self.assertEqual(res["preguntas_sugeridas"], playbooks.preguntas_para("efectividad"))
+
+	def test_validador(self):
+		validas = api._sugerencias_validas([
+			"¿Qué talleres tienen la efectividad más baja?",
+			"¿Por qué cayó la efectividad?",
+			"¿Y con 500 piezas?",
+			"¿Qué marcas tienen más piezas?",
+			"¿Cuántas piezas tiene GNP?",
+		])
+		self.assertEqual(
+			validas,
+			[
+				"¿Qué talleres tienen la efectividad más baja?",
+				"¿Qué marcas tienen más piezas?",
+			],
+		)
+		self.assertEqual(
+			api._extraer_sugerencias("A\n[SUGERENCIAS]q1 | q2[/SUGERENCIAS]\nB"),
+			("A\n\nB", ["q1", "q2"]),
+		)
+
+	def test_trazabilidad_de_la_pregunta_sugerida(self):
+		self.configurar(modo_sugerencias="Modelo libre")
+		texto = (
+			"El total es 80.0%.\n\n"
+			"[SUGERENCIAS]¿Qué talleres tienen la efectividad más baja?[/SUGERENCIAS]\n\n"
+			"Sugerencia: ¿Seguimos?"
+		)
+		with patch.object(api, "generate_spec", return_value=(SPEC, INFO)), \
+			patch.object(api, "_analisis_completo", return_value=PACK), \
+			patch.object(api, "explain", return_value=(texto, _info())):
+			primera = api.ask("¿cuántas piezas hay?")
+		conv = primera["conversacion"]
+		with patch.object(api, "generate_spec", return_value=(SPEC, INFO)), \
+			patch.object(api, "_analisis_completo", return_value=PACK), \
+			patch.object(api, "explain", return_value=("Otra.", _info())):
+			segunda = api.ask(
+				"¿Qué talleres tienen la efectividad más baja?",
+				conversacion=conv,
+				sugerencia_id=primera["sugerencias_id"],
+				sugerencia_indice=1,
+				sugerencia_modo=primera["sugerencias_modo"],
+			)
+		self.assertTrue(segunda["ok"])
+		doc = frappe.get_doc("IA Conversacion", conv)
+		usuario = [m for m in doc.mensajes if m.rol == "usuario"][-1]
+		self.assertEqual(usuario.origen_pregunta, "Sugerencia")
+		self.assertEqual(usuario.sugerencia_modo, "Modelo libre")
+		self.assertEqual(usuario.sugerencia_indice, 1)
+		self.assertEqual(usuario.sugerencia_id, primera["sugerencias_id"])
+		asistente = [m for m in doc.mensajes if m.rol == "asistente"][-1]
+		self.assertEqual(asistente.sugerencias_modo, "Playbook")
+		self.assertTrue(asistente.sugerencias_json)
+		logs = frappe.get_all(
+			"IA API Log",
+			filters={"usuario": USUARIO_GNP, "origen_pregunta": "Sugerencia"},
+			fields=["sugerencia_modo", "sugerencia_indice"],
+			order_by="creation desc",
+			limit=1,
+		)
+		self.assertTrue(logs)
+		self.assertEqual(logs[0].sugerencia_modo, "Modelo libre")
+		self.assertEqual(logs[0].sugerencia_indice, 1)
+
+	def test_id_vencido_queda_como_sugerencia_sin_modo(self):
+		self.configurar(modo_sugerencias="Playbook")
+		with patch.object(api, "generate_spec", return_value=(SPEC, INFO)), \
+			patch.object(api, "explain", return_value=("Texto.", _info())):
+			primera = api.ask("¿cuántas piezas hay?")
+		conv = primera["conversacion"]
+		with patch.object(api, "generate_spec", return_value=(SPEC, INFO)), \
+			patch.object(api, "explain", return_value=("Texto.", _info())):
+			api.ask(
+				"¿Y por taller?",
+				conversacion=conv,
+				sugerencia_id="no-existe",
+				sugerencia_indice=2,
+				sugerencia_modo="Playbook",
+			)
+		doc = frappe.get_doc("IA Conversacion", conv)
+		usuario = [m for m in doc.mensajes if m.rol == "usuario"][-1]
+		self.assertEqual(usuario.origen_pregunta, "Sugerencia")
+		self.assertEqual(usuario.sugerencia_modo, "")
+		self.assertEqual(usuario.sugerencia_indice, 0)
+
+	def test_pregunta_escrita_queda_como_escrita(self):
+		with patch.object(api, "generate_spec", return_value=(SPEC, INFO)), \
+			patch.object(api, "explain", return_value=("Texto.", _info())):
+			res = api.ask("¿cuántas piezas hay?")
+		doc = frappe.get_doc("IA Conversacion", res["conversacion"])
+		usuario = [m for m in doc.mensajes if m.rol == "usuario"][-1]
+		self.assertEqual(usuario.origen_pregunta, "Escrita")
+		self.assertEqual(usuario.sugerencia_modo, "")
+
+
+class TestSugerenciasUso(FrappeTestCase):
+	"""Resumen de ofertas/clics/éxito por modo (endpoint de administración)."""
+
+	def setUp(self):
+		frappe.set_user("Administrator")
+		self.addCleanup(frappe.set_user, "Administrator")
+
+	def _fila(self, consulta_id="t-sug-1", modo="Modelo libre (prueba)"):
+		conv = frappe.get_doc(
+			{
+				"doctype": "IA Conversacion",
+				"usuario": "Administrator",
+				"estado": "Abierta",
+				"titulo": "Prueba sugerencias",
+			}
+		)
+		conv.append(
+			"mensajes",
+			{
+				"rol": "asistente",
+				"fecha_hora": frappe.utils.now_datetime(),
+				"contenido": "Respuesta",
+				"sugerencias_modo": modo,
+				"sugerencias_json": json.dumps(["¿Y por taller?"]),
+				"sugerencias_id": "abc",
+				"consulta_id": consulta_id,
+			},
+		)
+		conv.append(
+			"mensajes",
+			{
+				"rol": "usuario",
+				"fecha_hora": frappe.utils.now_datetime(),
+				"contenido": "¿Y por taller?",
+				"origen_pregunta": "Sugerencia",
+				"sugerencia_modo": modo,
+				"sugerencia_indice": 1,
+				"consulta_id": consulta_id,
+			},
+		)
+		conv.insert(ignore_permissions=True)
+		frappe.get_doc(
+			{
+				"doctype": "IA API Log",
+				"fecha_hora": frappe.utils.now_datetime(),
+				"estado": "Éxito",
+				"consulta_id": consulta_id,
+				"usuario": "Administrator",
+				"operacion": "explain",
+				"latencia_total_ms": 1000,
+				"tokens_entrada": 10,
+				"tokens_salida": 20,
+			}
+		).insert(ignore_permissions=True)
+
+	def test_resumen_por_modo(self):
+		self._fila()
+		hoy = frappe.utils.now_datetime().strftime("%Y-%m-%d")
+		res = api.sugerencias_uso(periodo="personalizado", desde=hoy, hasta=hoy)
+		modo = res["modos"].get("Modelo libre (prueba)")
+		self.assertTrue(modo)
+		self.assertEqual(modo["ofertas"], 1)
+		self.assertEqual(modo["clics"], 1)
+		self.assertEqual(modo["ctr"], 100.0)
+		self.assertEqual(modo["resueltos"], 1)
+		self.assertEqual(modo["tasa_exito"], 100.0)
+		self.assertEqual(modo["tokens"], 30)
+
+	def test_solo_administradores(self):
+		frappe.set_user(USUARIO_GNP)
+		self.addCleanup(frappe.set_user, "Administrator")
+		with self.assertRaises(frappe.PermissionError):
+			api.sugerencias_uso()
+
+
 class TestExtraerInvitacion(FrappeTestCase):
+	def test_marcador_sin_texto_se_quita(self):
+		self.assertEqual(
+			api._extraer_invitacion("Texto.\n\nSugerencia:"), ("Texto.", "")
+		)
+
 	def test_quita_la_ultima_linea_con_marcador(self):
 		texto = "Resumen.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nSugerencia: ¿Quieres saber más?"
 		resto, invitacion = api._extraer_invitacion(texto)

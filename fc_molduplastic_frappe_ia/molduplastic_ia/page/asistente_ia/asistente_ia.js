@@ -70,6 +70,11 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			.ia-sugeridas { margin-top: 10px; }
 			.ia-sugeridas-intro { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
 			.ia-sugeridas-msg { display: flex; flex-wrap: wrap; gap: 6px; }
+			.ia-calificar { margin-top: 8px; display: flex; justify-content: flex-end; align-items: center; gap: 8px; font-size: 12px; }
+			.ia-calificar a { cursor: pointer; }
+			.ia-calificar .ia-cal-bien { color: var(--green-600, #2e7d32); font-weight: 600; }
+			.ia-calificar .ia-cal-mal { color: var(--red-600, #c62828); font-weight: 600; }
+			.ia-calificar-opciones { display: flex; gap: 8px; margin-bottom: 8px; }
 			.ia-chip { cursor: pointer; font-size: 12px; padding: 4px 10px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--card-bg); color: var(--text-color); }
 			.ia-chip:hover { background: var(--bg-light-gray); }
 			#ia-periodo-bar { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
@@ -270,6 +275,15 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			.split("\n")
 			.filter((l) => /^\s*\|/.test(l));
 		return Math.max(0, lineas.length - 2);
+	}
+
+	// Columnas de la primera línea de tabla Markdown del modelo.
+	function columnasDeTablaTexto(texto) {
+		const linea = String(texto || "")
+			.split("\n")
+			.find((l) => /^\s*\|/.test(l));
+		if (!linea) return 0;
+		return Math.max(0, linea.split("|").length - 2);
 	}
 
 	// --- Gráficas ---------------------------------------------------------
@@ -555,7 +569,7 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		return div;
 	}
 
-	function addTabla(div, tabla, spec, coberturaTxt, idx, omitirTabla) {
+	function addTabla(div, tabla, spec, coberturaTxt, idx, omitirTabla, htmlDespues) {
 		if (!tabla || !tabla.columnas) return;
 		if (!omitirTabla) {
 			const t = $("<table>").addClass("ia-tbl");
@@ -575,6 +589,10 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 				$("<div>").addClass("ia-cob").text(`Mostrando 50 de ${todas.length} filas.`).appendTo(div);
 			}
 		}
+		if (htmlDespues) {
+			// Lectura analítica después de los datos (dueño, 2026-11-22).
+			$(htmlDespues).appendTo(div);
+		}
 		const acts = $("<div>").addClass("ia-actions").appendTo(div);
 		// Toda tabla con datos se puede graficar: el tipo y los ejes se preguntan
 		// en el diálogo (antes solo aparecía si el modelo pedía render_chart).
@@ -589,26 +607,156 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 
 	const mensajes = []; // {rol, contenido, tabla, spec, coberturaTxt, grafico}
 
+	// La lectura analítica ("Lo que veo", "Ojo con esto", "Qué te sugiero") va
+	// después de la tabla (dueño, 2026-11-22): el texto se parte en el primer
+	// título y la segunda mitad se pinta debajo de los datos.
+	const RE_TITULO_ANALISIS =
+		/(?:^|\n)\s*(?:\*\*|#{1,3}\s*)?(Lo que veo|Ojo con esto|Qu[ée] te sugiero|Lectura|Alertas|Sugerencias)(?:\*\*)?\s*(?=\n|$)/i;
+
+	function separarAnalisis(texto) {
+		const t = String(texto || "");
+		const m = RE_TITULO_ANALISIS.exec(t);
+		if (!m || m.index <= 0) return { antes: t, despues: "" };
+		return {
+			antes: t.slice(0, m.index).trim(),
+			despues: t.slice(m.index).trim(),
+		};
+	}
+
+	function htmlMarkdown(texto) {
+		const html = mdAHtml(texto);
+		if (html) return limpiarHtml(html);
+		// Sin renderer: texto escapado (nunca HTML crudo del modelo).
+		return $("<div>").text(texto || "").html();
+	}
+
+	// Calificación de la respuesta: Bien/Mal con comentario. El pie va alineado
+	// a la derecha, después de la tabla y de la lectura analítica.
+	function abrirCalificacion(m, repintar) {
+		let elegida = m.calificacion || "";
+		const d = new frappe.ui.Dialog({
+			title: "Calificar respuesta",
+			fields: [
+				{ fieldtype: "HTML", fieldname: "opciones" },
+				{
+					fieldtype: "Small Text",
+					fieldname: "comentario",
+					label: "Comentarios",
+					default: m.comentario || "",
+					description: "Para calificar Mal es obligatorio explicar qué estuvo mal.",
+				},
+			],
+			primary_action_label: "Guardar calificación",
+			primary_action(valores) {
+				const comentario = String((valores || {}).comentario || "").trim();
+				if (!elegida) {
+					frappe.msgprint("Elige Bien o Mal.");
+					return;
+				}
+				if (elegida === "Mal" && !comentario) {
+					frappe.msgprint("Para calificar Mal escribe un comentario.");
+					return;
+				}
+				d.get_primary_btn().prop("disabled", true);
+				frappe.call({
+					method: API + ".calificar_respuesta",
+					args: {
+						conversacion: state.conv,
+						mensaje_id: m.mensaje_id,
+						calificacion: elegida,
+						comentario: comentario,
+					},
+					freeze: true,
+				}).then((r) => {
+					const res = r.message || {};
+					if (!res.ok) {
+						frappe.msgprint(res.mensaje || "No se pudo guardar la calificación.");
+						return;
+					}
+					m.calificacion = res.calificacion || elegida;
+					m.comentario = res.comentario || "";
+					d.hide();
+					if (repintar) repintar();
+				}).always(() => d.get_primary_btn().prop("disabled", false));
+			},
+		});
+		const $opciones = d.fields_dict.opciones.$wrapper;
+		const opciones = [
+			{ valor: "Bien", texto: "👍 Bien", clase: "btn-success" },
+			{ valor: "Mal", texto: "👎 Mal", clase: "btn-danger" },
+		];
+		const pintarOpciones = () => {
+			$opciones.empty();
+			const $fila = $("<div>").addClass("ia-calificar-opciones").appendTo($opciones);
+			opciones.forEach((o) => {
+				$("<button>")
+					.attr("type", "button")
+					.addClass("btn btn-sm " + (elegida === o.valor ? o.clase : "btn-default"))
+					.text(o.texto)
+					.on("click", () => {
+						elegida = o.valor;
+						pintarOpciones();
+					})
+					.appendTo($fila);
+			});
+			if (elegida === "Mal") {
+				$("<div>").addClass("text-muted small")
+					.text("Cuéntanos qué estuvo mal (obligatorio).")
+					.appendTo($opciones);
+			}
+		};
+		pintarOpciones();
+		d.show();
+	}
+
+	function addCalificar(div, m) {
+		if (!m || !m.mensaje_id) return;
+		const $pie = $("<div>").addClass("ia-calificar").appendTo(div);
+		const pintar = () => {
+			$pie.empty();
+			if (m.calificacion) {
+				$("<span>")
+					.addClass(m.calificacion === "Bien" ? "ia-cal-bien" : "ia-cal-mal")
+					.text("Calificado: " + m.calificacion)
+					.appendTo($pie);
+				$("<a>").text("Editar").on("click", () => abrirCalificacion(m, pintar)).appendTo($pie);
+			} else {
+				$("<a>").text("Calificar").on("click", () => abrirCalificacion(m, pintar)).appendTo($pie);
+			}
+		};
+		pintar();
+	}
+
 	function renderAsistente(m) {
-		const div = addMsg("asistente", m.contenido);
-		const yaExplicada = /cobertura/i.test(m.contenido || "");
+		// Con más de una fila, la tabla del servidor se pinta siempre: si el
+		// modelo escribió una tabla más corta o con menos columnas (p. ej. sin
+		// el "Intervalo 95%"), se completa con la del resultado.
+		const filasServidor = ((m.tabla && m.tabla.filas) || []).length;
+		const columnasServidor = ((m.tabla && m.tabla.columnas) || []).length;
+		const tablaTextoCompleta =
+			traeTabla(m.contenido) &&
+			filasServidor <= Math.max(1, filasDeTablaTexto(m.contenido)) &&
+			columnasServidor <= columnasDeTablaTexto(m.contenido);
+		// Un reporte guardado como gráfica se abre solo con su gráfica; uno
+		// guardado como tabla, solo con su tabla.
+		const omitirTabla = m.soloGrafico || esCifraUnica(m.tabla) || tablaTextoCompleta;
+		const pintaTabla = !omitirTabla && !!(m.tabla && m.tabla.columnas);
+		const partes = pintaTabla
+			? separarAnalisis(m.contenido)
+			: { antes: m.contenido, despues: "" };
+		const div = addMsg("asistente", partes.antes);
+		const yaExplicada = /cobertura/i.test(partes.antes || "");
 		if (m.coberturaTxt && !yaExplicada) {
 			$("<div>").addClass("ia-cob").text(m.coberturaTxt).appendTo(div);
 		}
-		// Con más de una fila, la tabla del servidor se pinta siempre: si el
-		// modelo escribió una tabla más corta, se completa con la del resultado.
-		const filasServidor = ((m.tabla && m.tabla.filas) || []).length;
-		const tablaTextoCompleta =
-			traeTabla(m.contenido) && filasServidor <= Math.max(1, filasDeTablaTexto(m.contenido));
 		addTabla(
 			div,
 			m.tabla,
 			m.spec,
 			m.coberturaTxt,
 			mensajes.length - 1,
-			// Un reporte guardado como gráfica se abre solo con su gráfica; uno
-			// guardado como tabla, solo con su tabla.
-			m.soloGrafico || esCifraUnica(m.tabla) || tablaTextoCompleta
+			omitirTabla,
+			partes.despues ? "<div class=\"ia-pre ia-md\">" + htmlMarkdown(partes.despues) + "</div>" : ""
 		);
 		// Preguntas de seguimiento del análisis: una pregunta normal al servidor.
 		if ((m.sugeridas || []).length) {
@@ -618,14 +766,19 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 				$("<div>").addClass("ia-sugeridas-intro").text(m.texto_sugerencias).appendTo($bloque);
 			}
 			const $sug = $("<div>").addClass("ia-sugeridas-msg").appendTo($bloque);
-			m.sugeridas.forEach((texto) => {
+			m.sugeridas.forEach((texto, idx) => {
 				$("<button>")
 					.addClass("btn btn-default btn-xs")
 					.text(texto)
-					.on("click", () => enviarPregunta(texto))
+					.on("click", () => enviarPregunta(texto, {
+						sugerencia_id: m.sugerencias_id,
+						sugerencia_indice: idx + 1,
+						sugerencia_modo: m.sugerencias_modo,
+					}))
 					.appendTo($sug);
 			});
 		}
+		addCalificar(div, m);
 	}
 
 	function setUniverso(u, nombre) {
@@ -861,7 +1014,15 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 					mensajes.push({ rol: "usuario" });
 					addMsg("usuario", m.contenido);
 				} else {
-					const msg = { rol: "asistente", contenido: m.contenido };
+					const msg = {
+						rol: "asistente",
+						contenido: m.contenido,
+						mensaje_id: m.name || "",
+						calificacion: m.calificacion || "",
+						comentario: m.comentario || "",
+						sugerencias_id: m.sugerencias_id || "",
+						sugerencias_modo: m.sugerencias_modo || "",
+					};
 					try {
 						if (m.datos_json) {
 							const _cob = m.cobertura_json ? JSON.parse(m.cobertura_json) : null;
@@ -871,6 +1032,14 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 							msg.coberturaTxt = _cob ? textoCobertura(_cob) : "";
 						}
 					} catch (e) { /* solo texto */ }
+					// Chips del turno guardado: se reabren con su id y modo para
+					// que el clic siga siendo trazable.
+					try {
+						if (m.sugerencias_json) {
+							const lista = JSON.parse(m.sugerencias_json);
+							if (Array.isArray(lista) && lista.length) msg.sugeridas = lista;
+						}
+					} catch (e) { /* sin sugerencias */ }
 					mensajes.push(msg);
 					renderAsistente(msg);
 				}
@@ -886,7 +1055,10 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		enviarPregunta(q);
 	}
 
-	function enviarPregunta(q) {
+	function enviarPregunta(q, meta) {
+		q = String(q || "").trim();
+		if (!q || state.cargando) return;
+		const sugerencia = meta || {};
 		// Personalizado necesita las dos fechas: sin ellas el servidor caería al
 		// default y la pregunta se contestaría sobre otro período.
 		if (state.periodos.length && state.periodo_consulta === "personalizado") {
@@ -927,6 +1099,10 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			desde: state.periodo_desde || null,
 			hasta: state.periodo_hasta || null,
 			progreso_id: progresoId,
+			// Trazabilidad: solo los chips la mandan.
+			sugerencia_id: sugerencia.sugerencia_id || null,
+			sugerencia_indice: sugerencia.sugerencia_indice || null,
+			sugerencia_modo: sugerencia.sugerencia_modo || null,
 		}).then((r) => {
 			clearInterval(timer);
 			loader.remove();
@@ -951,8 +1127,12 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			const msg = {
 				rol: "asistente",
 				contenido: m.mensaje || m.respuesta,
+				mensaje_id: m.mensaje_id || "",
 				sugeridas: m.preguntas_sugeridas || [],
 				texto_sugerencias: m.texto_sugerencias || "",
+				// Trazabilidad del set ofrecido: el chip lo devuelve al preguntar.
+				sugerencias_id: m.sugerencias_id || "",
+				sugerencias_modo: m.sugerencias_modo || "",
 			};
 			if (m.columnas) {
 				msg.tabla = { columnas: m.columnas, filas: m.filas };

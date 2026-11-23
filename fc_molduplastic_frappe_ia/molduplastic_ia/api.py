@@ -1,6 +1,8 @@
 """API whitelisteada del asistente IA: ask, historial, reportes."""
 
+import hashlib
 import json
+import math
 import re
 import time
 import unicodedata
@@ -155,6 +157,56 @@ def _texto_normalizado(texto):
 def _contiene_frase(texto, frase):
 	"""Palabra/frase completa: "hdi" no coincide dentro de otra palabra."""
 	return bool(re.search(rf"(?<![a-z0-9]){re.escape(frase)}(?![a-z0-9])", texto))
+
+
+def _sin_tablas_markdown(texto):
+	"""Quita los bloques de tabla Markdown del texto del modelo.
+
+	Cuando la app ya pinta la tabla del servidor (efectividad), la tabla que
+	escribe el modelo sobra: puede traer columnas viejas (tendencia copiada del
+	turno anterior) o venir sin encabezado, y entonces el chat la muestra como
+	puros pipes. Se eliminan las líneas de tabla y los espacios en blanco que
+	quedan de más.
+	"""
+	lineas = []
+	for linea in (texto or "").split("\n"):
+		if re.match(r"^\s*\|", linea):
+			continue
+		lineas.append(linea)
+	salida = "\n".join(lineas)
+	salida = re.sub(r"\n{3,}", "\n\n", salida)
+	return salida.strip()
+
+
+# Títulos de la lectura analítica. En el chat van DESPUÉS de la tabla (dueño,
+# 2026-11-22): el orden es datos y luego el análisis.
+TITULOS_DE_ANALISIS = (
+	"lo que veo",
+	"ojo con esto",
+	"que te sugiero",
+	"lectura",
+	"alertas",
+	"sugerencias",
+)
+
+
+def _indice_del_analisis(texto):
+	"""Posición del primer título de la lectura analítica, o -1 si no hay."""
+	desplazamiento = 0
+	for linea in (texto or "").splitlines(keepends=True):
+		limpio = _sin_acentos(linea).strip().strip("*# ").strip().lower()
+		if any(limpio.startswith(titulo) for titulo in TITULOS_DE_ANALISIS):
+			return desplazamiento
+		desplazamiento += len(linea)
+	return -1
+
+
+def _con_linea_antes_del_analisis(texto, linea):
+	"""Inserta `linea` antes de la lectura analítica (o al final si no hay)."""
+	indice = _indice_del_analisis(texto)
+	if indice < 0:
+		return f"{texto}\n\n{linea}"
+	return f"{texto[:indice].rstrip()}\n\n{linea}\n\n{texto[indice:].lstrip()}"
 
 
 def _pide_dato_sentible(pregunta):
@@ -417,6 +469,38 @@ def _minimo_de_la_pregunta(pregunta):
 	return None
 
 
+def _minimo_piezas_porcentaje():
+	"""Piso de ingresadas para medir efectividad (Molduplastic IA Settings).
+
+	`min_piezas_porcentaje` es el mínimo que ya usaba el análisis para los
+	porcentajes; desde el 2026-11-21 también es el mínimo de "piezas ingresadas"
+	de toda pregunta de efectividad con dimensiones (dueño). Un valor vacío o
+	inválido cae a 50, igual que `_config_analisis`.
+	"""
+	try:
+		valor = frappe.get_cached_doc("Molduplastic IA Settings").min_piezas_porcentaje
+	except Exception:  # noqa: BLE001 - sin Settings la efectividad sigue funcionando
+		return 50
+	try:
+		return max(1, int(valor))
+	except (TypeError, ValueError):
+		return 50
+
+
+def _aplicar_minimo_ingresadas(spec, pregunta):
+	"""Fija el mínimo de ingresadas de una efectividad con grupos.
+
+	Es un HAVING sobre el conteo: el piso configurado manda aunque la pregunta no
+	traiga número, y si la pregunta pide más ("con 500 o más") se respeta el
+	número mayor. Sin `group_by` no aplica (el validador lo rechazaría).
+	"""
+	if not spec.get("group_by"):
+		return
+	piso = max(_minimo_piezas_porcentaje(), _minimo_de_la_pregunta(pregunta) or 0)
+	propio = spec.get("min_ingresadas") or 0
+	spec["min_ingresadas"] = max(piso, int(propio))
+
+
 MESES = (
 	"enero",
 	"febrero",
@@ -629,6 +713,7 @@ def _es_between(cond):
 # actual, también en cuatrimestres y detecta el cuatrimestre actual".
 MESES_POR_TRIMESTRE = 3
 MESES_POR_CUATRIMESTRE = 4
+MESES_POR_BIMESTRE = 2
 ORDINALES_BLOQUE = {
 	"primer": 1,
 	"primero": 1,
@@ -751,6 +836,10 @@ def _aplicar_periodo(spec, clave, pregunta, desde=None, hasta=None):
 	if _pide_mezcla_volumen_efectividad(pregunta):
 		# "mucho volumen y baja efectividad": su ventana ya está fijada (el año
 		# cuando la pregunta no trae período).
+		return spec
+	if _pide_recoleccion_por_bloque(pregunta):
+		# "Qué mes/trimestre tiene mayor recolección": el año lo fija el
+		# servidor; el selector lo dejaría en un mes.
 		return spec
 	if _es_crecimiento_siniestros(spec) or (
 		spec.get("group_by") == ["mes"] and len(spec.get("aggregations") or []) == 1
@@ -1104,13 +1193,16 @@ def _periodo_efectividad(spec):
 
 
 def _aggs_recolectadas(desde, hasta):
-	"""A + B de "recolectada" (definición del dueño 2026-10-31).
+	"""A1 + A2 + B de "recolectada" (dueño 2026-10-31; ajuste 2026-11-21).
 
-	A1 "recolectadas en periodo" = ingresó en el período, estatus 100, recolectada
-	en el mismo mes y no antes del ingreso. A2 inconsistentes recolectadas =
-	ingresó en el período, estatus 100, recolectada antes del ingreso.
-	B rezagadas recolectadas = recolectada en el período, ingresó antes.
-	Las tres son disjuntas: Recolectadas = en periodo + inconsistentes + rezagadas.
+	A1 "recolectadas en periodo" = se cargó en el período, estatus 100, recolectable
+	= 1, y la recolección cayó DENTRO DEL MISMO PERÍODO (el rango consultado), no
+	antes de la carga. A2 inconsistentes recolectadas = se cargó en el período,
+	estatus 100, recolectada antes de la carga. B rezagadas recolectadas =
+	recolectada en el período, carga anterior al período.
+	El total "Recolectadas" es A1 + A2: las rezagadas (B) viajan en la misma
+	agregación porque son la base de la segunda consulta y de la tabla de
+	recolección, pero no se suman (dueño, 2026-11-21).
 	"""
 	return [
 		{
@@ -1122,7 +1214,7 @@ def _aggs_recolectadas(desde, hasta):
 				"id_estatus": ["=", 100],
 				"recolectable": ["=", 1],
 				"fecha_hora_recoleccion": [
-					["mes_igual", {"campo": "fecha_hora_carga"}],
+					["between", desde, hasta],
 					[">=", {"campo": "fecha_hora_carga"}],
 				],
 			},
@@ -1458,8 +1550,8 @@ def _completar_efectividad(spec, pregunta):
 			dimension = _dimension_de_la_pregunta(pregunta)
 			if dimension:
 				spec["group_by"] = [dimension]
+		_aplicar_minimo_ingresadas(spec, pregunta)
 		if spec.get("group_by"):
-			spec.setdefault("min_ingresadas", _minimo_de_la_pregunta(pregunta) or 50)
 			# "Sin plaza" / "Sin taller" no es una plaza: en un top no puede
 			# ganar. Solo se excluye el nulo de la dimensión que se rankea.
 			for dimension in spec["group_by"]:
@@ -1479,13 +1571,10 @@ def _completar_efectividad(spec, pregunta):
 				texto = _sin_acentos(pregunta)
 				asc = any(x in texto for x in ("menos", "peor", "menor", "baja"))
 				spec["order_by"] = [{"field": "recolectadas", "dir": "asc" if asc else "desc"}]
-	elif spec.get("group_by"):
-		# Efectividad normal con un corte explícito: "por taller con al menos
-		# 500 piezas". El umbral es un HAVING, no un filtro, y solo tiene
-		# sentido con grupos; sin número en la pregunta no se agrega nada.
-		minimo = _minimo_de_la_pregunta(pregunta)
-		if minimo:
-			spec.setdefault("min_ingresadas", minimo)
+	else:
+		# Efectividad normal: el mínimo de ingresadas es SIEMPRE el configurado
+		# (`min_piezas_porcentaje`), o el número de la pregunta si es mayor.
+		_aplicar_minimo_ingresadas(spec, pregunta)
 	return spec
 
 
@@ -3649,8 +3738,8 @@ def _medida_de_crecimiento(pregunta):
 
 
 def _etiqueta_de_bloque(anio, indice, meses):
-	nombre = "trimestre" if meses == 3 else "cuatrimestre"
-	sufijo = {1: "er", 2: "do", 3: "er", 4: "to"}.get(indice, "")
+	nombre = {2: "bimestre", 3: "trimestre", 4: "cuatrimestre"}.get(meses, "trimestre")
+	sufijo = {1: "er", 2: "do", 3: "er", 4: "to", 5: "to", 6: "to"}.get(indice, "")
 	return f"{indice}{sufijo} {nombre} de {anio}"
 
 
@@ -3714,15 +3803,22 @@ def _completar_crecimiento_periodos(spec, pregunta):
 	return spec
 
 
-def _serie_por_bloque(resultado, granularidad):
-	"""Agrupa la serie mensual en meses/trimestres/cuatrimestres con variación."""
+def _meses_del_bloque(granularidad):
+	"""Duración del bloque de una serie: 1 mes, 2 bimestre, 3 trimestre, 4 cuatrimestre."""
+	return {"mes": 1, "bimestre": 2, "trimestre": 3, "cuatrimestre": 4}[granularidad]
+
+
+def _bloques_mensuales(resultado, meses):
+	"""Suma una serie mensual por bloque: (acumulado, orden, medida).
+
+	`acumulado` = {clave: {"etiqueta", "valor"}}; la clave es "2026-03" para
+	meses y "2026-1" para bimestres/trimestres/cuatrimestres.
+	"""
 	columnas = [str(c).lower() for c in (resultado.get("columnas") or [])]
 	if "mes" not in columnas or len(columnas) < 2:
-		return [], ""
+		return {}, [], ""
 	medida = columnas[1]
 	i_mes, i_med = columnas.index("mes"), columnas.index(medida)
-	meses = MESES_POR_TRIMESTRE if granularidad == "trimestre" else MESES_POR_CUATRIMESTRE
-	hoy = frappe.utils.getdate(frappe.utils.nowdate())
 	acumulado, orden = {}, []
 	for fila in resultado.get("filas") or []:
 		texto_mes = str(fila[i_mes] or "")[:7]
@@ -3730,7 +3826,9 @@ def _serie_por_bloque(resultado, granularidad):
 			anio, numero = int(texto_mes[:4]), int(texto_mes[5:7])
 		except (ValueError, IndexError):
 			continue
-		if granularidad == "mes":
+		if not 1 <= numero <= 12:
+			continue
+		if meses == 1:
 			clave, etiqueta = texto_mes, _mes_legible(texto_mes)
 		else:
 			indice = (numero - 1) // meses + 1
@@ -3739,24 +3837,93 @@ def _serie_por_bloque(resultado, granularidad):
 			acumulado[clave] = {"etiqueta": etiqueta, "valor": 0}
 			orden.append(clave)
 		acumulado[clave]["valor"] += fila[i_med] or 0
-	# El bloque en curso va a medias: su caída no es crecimiento.
+	return acumulado, orden, medida
+
+
+def _variacion_pct(valor, base):
+	"""Variación porcentual contra una base, o "—" si no hay base."""
+	if base in (None, "") or not base:
+		return "—"
+	return f"{(valor - base) / base * 100:+.1f}%"
+
+
+def _numero_compacto(valor):
+	"""Entero con separador de miles; con un decimal si no es entero."""
+	if abs(valor - round(valor)) < 0.05:
+		return f"{valor:,.0f}"
+	return f"{valor:,.1f}"
+
+
+def _pide_interanual(pregunta):
+	""""Con interanual": la serie pide la comparación con el año anterior."""
+	texto = _sin_acentos(pregunta or "")
+	if re.search(r"\binter-?anual\b|\byoy\b|year[\s-]?over[\s-]?year", texto):
+		return True
+	return bool(
+		re.search(
+			r"\b(?:contra|vs\.?|versus)\s+el\s+(?:ano\s+pasado|ano\s+anterior|mismo\s+(?:mes|periodo))",
+			texto,
+		)
+	)
+
+
+def _pide_promedio_movil(pregunta):
+	""""Con promedio/media móvil": la serie pide la media de 3."""
+	texto = _sin_acentos(pregunta or "")
+	return bool(
+		re.search(r"\b(?:promedio|media)\s+movil\b|\bmovil\s+de\s+3\b|\bpromedio\s+(?:de\s+)?3\b", texto)
+	)
+
+
+def _pide_columnas_de_tendencia(pregunta):
+	"""La pregunta pide explícitamente la vista de tendencia (ambas columnas)."""
+	return bool(re.search(r"\btendencia\b", _sin_acentos(pregunta or "")))
+
+
+def _serie_por_bloque(
+	resultado, granularidad, previo=None, con_interanual=False, con_promedio=False
+):
+	"""Serie por bloque con variación y, si se piden, interanual y promedio móvil.
+
+	`previo` es el resultado de la misma serie un año antes (solo se consulta
+	cuando la pregunta pide el interanual). El promedio móvil es el de los
+	últimos 3 bloques mostrados (incluido el actual). Las columnas de tendencia
+	no se agregan por defecto: solo si se piden explícitamente (dueño,
+	2026-11-22).
+	"""
+	meses = _meses_del_bloque(granularidad)
+	acumulado, orden, medida = _bloques_mensuales(resultado, meses)
+	if not acumulado:
+		return [], medida
+	previos = _bloques_mensuales(previo, meses)[0] if (previo and con_interanual) else {}
+	hoy = frappe.utils.getdate(frappe.utils.nowdate())
 	indice_actual = (hoy.month - 1) // meses + 1
-	clave_actual = hoy.strftime("%Y-%m") if granularidad == "mes" else f"{hoy.year}-{indice_actual}"
+	clave_actual = (
+		hoy.strftime("%Y-%m") if meses == 1 else f"{hoy.year}-{indice_actual}"
+	)
 	_, hasta_actual = _rango_de_bloque(hoy.year, indice_actual, meses)
 	completo = _dia(hoy) == hasta_actual[:10]
-	filas, anterior = [], None
+	filas, valores = [], []
 	for clave in orden:
 		if clave == clave_actual and not completo:
 			continue
 		valor = acumulado[clave]["valor"]
-		if anterior is None:
-			variacion = "—"
-		elif anterior:
-			variacion = f"{(valor - anterior) / anterior * 100:+.1f}%"
-		else:
-			variacion = "—"
-		filas.append([acumulado[clave]["etiqueta"], valor, variacion])
-		anterior = valor
+		variacion = _variacion_pct(valor, valores[-1] if valores else None)
+		fila = [acumulado[clave]["etiqueta"], valor, variacion]
+		if con_interanual:
+			anio = int(clave[:4])
+			indice = int(clave[5:]) if meses > 1 else int(clave[5:7])
+			clave_previa = (
+				f"{anio - 1}-{indice}" if meses > 1 else f"{anio - 1}-{indice:02d}"
+			)
+			fila.append(
+				_variacion_pct(valor, (previos.get(clave_previa) or {}).get("valor"))
+			)
+		if con_promedio:
+			ventana = (valores + [valor])[-3:]
+			fila.append(_numero_compacto(sum(ventana) / len(ventana)))
+		filas.append(fila)
+		valores.append(valor)
 	return filas, medida
 
 
@@ -3767,6 +3934,163 @@ def _es_crecimiento_periodos(spec, pregunta):
 		and len(spec.get("aggregations") or []) == 1
 		and _pide_crecimiento_periodos(pregunta)
 	)
+
+
+def _pide_recoleccion_por_bloque(pregunta):
+	"""“Qué mes/bimestre/trimestre/cuatrimestre tiene mayor/menor recolección”.
+
+	La medida es la efectividad del bloque, igual que “la región con mayor
+	recolección” (dueño, 2026-11-07/21): recolectadas (A1 + A2) / ingresadas.
+	Un bloque concreto (“el primer trimestre”, “el cuatrimestre actual”) no es un
+	ranking: eso lo resuelve `_bloque_de_la_pregunta`.
+	"""
+	texto = _sin_acentos(pregunta or "")
+	if not re.search(r"\b(?:bimestres?|trimestres?|cuatrimestres?|mes(?:es)?)\b", texto):
+		return False
+	if not re.search(r"\b(?:mayor|menor|mas|menos|mejor|peor|alta|baja)\b", texto):
+		return False
+	if not re.search(r"\brecolecc|\brecolect(?!or|able)", texto):
+		return False
+	# Un bloque concreto ("el primer trimestre", "el mes pasado", "el
+	# cuatrimestre actual") no es un ranking: eso lo resuelve el período.
+	if re.search(
+		r"\b(actual|corriente|en\s+curso|ultimo|ultima|pasado|pasada|anterior"
+		r"|primer|primero|primera|segundo|segunda|tercer|tercero|tercera|cuarto|cuarta"
+		r"|1er|1ro|2do|3er|3ro|4to|4ta)\b",
+		texto,
+	):
+		return False
+	return True
+
+
+def _granularidad_de_bloques(pregunta):
+	texto = _sin_acentos(pregunta or "")
+	if re.search(r"\bcuatrimestres?\b", texto):
+		return "cuatrimestre"
+	if re.search(r"\btrimestres?\b", texto):
+		return "trimestre"
+	if re.search(r"\bbimestres?\b", texto):
+		return "bimestre"
+	return "mes"
+
+
+def _anio_de_la_pregunta(pregunta):
+	"""Año del ranking: el escrito, el pasado o el año en curso."""
+	texto = _sin_acentos(pregunta or "")
+	m = re.search(r"\b(19\d{2}|20\d{2})\b", texto)
+	if m:
+		return int(m.group(1))
+	hoy = frappe.utils.getdate(frappe.utils.nowdate())
+	if "ano pasado" in texto or "ano anterior" in texto:
+		return hoy.year - 1
+	return hoy.year
+
+
+def _completar_recoleccion_por_bloque(spec, pregunta):
+	"""Efectividad por mes del año para elegir el bloque con más/menos recolección.
+
+	Se consulta una sola vez por mes (campo virtual `mes` de `fecha_hora_carga`)
+	y el código agrupa en bimestres, trimestres o cuatrimestres. La medida es la
+	efectividad del bloque (A1 + A2 sobre ingresadas): las rezagadas no suman y
+	B no se consulta porque su base es la recolección y agrupada por mes de carga
+	saldría de otro año.
+	"""
+	if not isinstance(spec, dict) or spec.get("out_of_scope") or spec.get("respuesta_directa"):
+		return spec
+	if not _pide_recoleccion_por_bloque(pregunta):
+		return spec
+	if spec.get("doctype") not in (None, "Pieza"):
+		return spec
+	anio = _anio_de_la_pregunta(pregunta)
+	desde, hasta = f"{anio}-01-01 00:00:00", f"{anio}-12-31 23:59:59"
+	spec["filters"] = {
+		"fecha_hora_carga": ["between", desde, hasta],
+		"recolectable": ["=", 1],
+	}
+	spec["fields"] = []
+	spec["group_by"] = ["mes"]
+	spec["order_by"] = [{"field": "mes", "dir": "asc"}]
+	spec["limit"] = 12
+	spec.pop("min_ingresadas", None)
+	spec.pop("render_chart", None)
+	total, a1, a2, _b = _aggs_efectividad(desde, hasta)
+	spec["aggregations"] = [total, a1, a2]
+	return spec
+
+
+def _tabla_recoleccion_por_bloque(spec, resultado, granularidad, pregunta):
+	"""Tabla por bloque del año y los bloques de mayor y menor efectividad.
+
+	Descarta los bloques con menos ingresadas que el piso configurado
+	(`min_piezas_porcentaje`) y el bloque en curso, que va a medias: todavía le
+	faltan recolecciones y su porcentaje sale más bajo por construcción.
+	"""
+	porcentajes = _porcentajes(spec, resultado)
+	if not porcentajes:
+		return [], None, None, False
+	meses = {"mes": 1, "bimestre": 2, "trimestre": 3, "cuatrimestre": 4}[granularidad]
+	hoy = frappe.utils.getdate(frappe.utils.nowdate())
+	acumulado = {}
+	for p in porcentajes:
+		texto = str(p.get("grupo") or "")[:7]
+		try:
+			anio, numero = int(texto[:4]), int(texto[5:7])
+		except (ValueError, IndexError):
+			continue
+		if not 1 <= numero <= 12:
+			continue
+		indice = (numero - 1) // meses + 1
+		clave = f"{anio}-{indice}"
+		dato = acumulado.setdefault(
+			clave, {"anio": anio, "mes": numero, "indice": indice, "total": 0, "recuperadas": 0}
+		)
+		dato["total"] += p.get("total") or 0
+		dato["recuperadas"] += p.get("recuperadas") or 0
+	piso = max(_minimo_piezas_porcentaje(), _minimo_de_la_pregunta(pregunta) or 0)
+	filas = []
+	omitido = False
+	for dato in acumulado.values():
+		if (dato["total"] or 0) < piso:
+			continue
+		_, fin = _rango_de_bloque(dato["anio"], dato["indice"], meses)
+		if _dia(hoy) < fin[:10]:
+			# El bloque en curso (o uno futuro) no se compara.
+			omitido = True
+			continue
+		if granularidad == "mes":
+			etiqueta = _mes_legible(f"{dato['anio']}-{dato['mes']:02d}")
+		else:
+			etiqueta = _etiqueta_de_bloque(dato["anio"], dato["indice"], meses)
+		pct = round((dato["recuperadas"] or 0) / dato["total"] * 100, 1)
+		filas.append([
+			etiqueta,
+			dato["total"],
+			dato["recuperadas"],
+			f"{pct:.1f}%",
+			_etiqueta_objetivo(pct),
+			pct,
+		])
+	if not filas:
+		return [], None, None, omitido
+	orden = sorted(range(len(filas)), key=lambda i: (filas[i][5], filas[i][1]), reverse=True)
+	mejor = filas[orden[0]]
+	peor = min(filas, key=lambda f: (f[5], -f[1]))
+	return (
+		[[f[0], f[1], f[2], f[3], f[4]] for f in (filas[i] for i in orden)],
+		mejor,
+		peor,
+		omitido,
+	)
+
+
+def _titulo_recoleccion_por_bloque(granularidad):
+	nombre = {
+		"mes": "Mes",
+		"bimestre": "Bimestre",
+		"trimestre": "Trimestre",
+		"cuatrimestre": "Cuatrimestre",
+	}[granularidad]
+	return f"Recolección por {nombre}"
 
 
 MEDIDAS_DE_CRECIMIENTO = {
@@ -3782,31 +4106,40 @@ def _titulo_crecimiento_periodos(pregunta, medida):
 	return f"Crecimiento de {MEDIDAS_DE_CRECIMIENTO.get(medida, 'Piezas').lower()} por {por}"
 
 
-def _serie_con_variacion(resultado):
-	"""Filas [mes, siniestros, variación %] a partir de la serie mensual."""
-	columnas = [str(c).lower() for c in (resultado.get("columnas") or [])]
-	if "mes" not in columnas or "siniestros" not in columnas:
+def _serie_con_variacion(resultado, previo=None, con_interanual=False, con_promedio=False):
+	"""Filas [mes, siniestros, variación] y, si se piden, interanual y promedio 3.
+
+	`previo` es la misma serie un año antes; el promedio es el de los últimos 3
+	meses mostrados. Las columnas de tendencia solo van si se piden (dueño,
+	2026-11-22).
+	"""
+	acumulado, orden, _ = _bloques_mensuales(resultado, 1)
+	if not orden:
 		return []
-	i_mes = columnas.index("mes")
-	i_sin = columnas.index("siniestros")
-	filas = []
-	anterior = None
+	previos = _bloques_mensuales(previo, 1)[0] if (previo and con_interanual) else {}
 	# El mes en curso va a medias: su caída (-99.9% el día 2) no es crecimiento.
 	hoy = frappe.utils.getdate(frappe.utils.nowdate())
 	mes_actual = hoy.strftime("%Y-%m")
 	mes_incompleto = hoy.day < frappe.utils.get_last_day(hoy).day
-	for fila in resultado.get("filas") or []:
-		if mes_incompleto and str(fila[i_mes])[:7] == mes_actual:
+	filas, valores = [], []
+	for clave in orden:
+		if mes_incompleto and clave == mes_actual:
 			break
-		siniestros = fila[i_sin] or 0
-		if anterior is None:
-			variacion = "—"
-		elif anterior:
-			variacion = f"{(siniestros - anterior) / anterior * 100:+.1f}%"
-		else:
-			variacion = "—"
-		filas.append([_mes_legible(fila[i_mes]), siniestros, variacion])
-		anterior = siniestros
+		valor = acumulado[clave]["valor"]
+		variacion = _variacion_pct(valor, valores[-1] if valores else None)
+		fila = [acumulado[clave]["etiqueta"], valor, variacion]
+		if con_interanual:
+			anio, numero = int(clave[:4]), int(clave[5:7])
+			fila.append(
+				_variacion_pct(
+					valor, (previos.get(f"{anio - 1}-{numero:02d}") or {}).get("valor")
+				)
+			)
+		if con_promedio:
+			ventana = (valores + [valor])[-3:]
+			fila.append(_numero_compacto(sum(ventana) / len(ventana)))
+		filas.append(fila)
+		valores.append(valor)
 	return filas
 
 
@@ -3957,16 +4290,16 @@ def _es_preferencia_region(spec):
 
 
 def _top_por_region(resultado):
-	"""Una fila por región: la marca/submarca con más recolectadas."""
+	"""Una fila por región: la marca/submarca con más recolectadas (A1 + A2)."""
 	columnas = [str(c).lower() for c in (resultado.get("columnas") or [])]
 	if len(columnas) < 4 or "region_pais" not in columnas:
 		return []
 	i_region = columnas.index("region_pais")
 	i_dim = 1 if i_region == 0 else 0
+	# Las rezagadas recolectadas no suman al total (2026-11-21).
 	i_reco = [columnas.index(c) for c in (
 		"recolectadas",
 		"recolectadas_inconsistentes",
-		"recolectadas_periodo",
 	) if c in columnas]
 	if not i_reco:
 		return []
@@ -5320,6 +5653,7 @@ def _spec_sin_modelo(pregunta):
 		or _pide_ficha_taller(pregunta)
 		or _pide_crecimiento_periodos(pregunta)
 		or _pide_crecimiento_dimension(pregunta)
+		or _pide_recoleccion_por_bloque(pregunta)
 	):
 		return None
 	desde, hasta = _rango_de_comparacion(pregunta)
@@ -5368,14 +5702,8 @@ def _valor_de_un_lado(fila, columnas_datos, lado, sufijo, pregunta):
 
 	medida = lado[1] if lado[0] == "medida" else _medida_de_la_pregunta(pregunta)
 	if medida == "recolectadas":
-		return sum(
-			suma(nombre)
-			for nombre in (
-				"recolectadas",
-				"recolectadas_inconsistentes",
-				"recolectadas_periodo",
-			)
-		)
+		# Recolectadas = en periodo + inconsistentes; las rezagadas no suman.
+		return suma("recolectadas") + suma("recolectadas_inconsistentes")
 	return suma(medida)
 
 
@@ -5435,8 +5763,9 @@ def _tabla_comparacion_contra(lados, spec, resultado, pregunta):
 				],
 				filas,
 			)
-		union = {"recolectadas", "recolectadas_inconsistentes", "recolectadas_periodo"}
+		union = {"recolectadas", "recolectadas_inconsistentes"}
 		if union <= set(columnas_datos):
+			# Recolectadas = en periodo + inconsistentes; las rezagadas no suman.
 			indices = [columnas_datos.index(a) for a in sorted(union)]
 			filas = []
 			for lado in (izq, der):
@@ -5688,6 +6017,10 @@ def _completar_valor_especifico(spec, pregunta):
 			for v in catalogos.get("tipo") or []
 			if _sin_acentos(str(v)).upper() not in marcas_planas
 			and _sin_acentos(str(v)).upper() not in PALABRAS_GENERICAS
+			# "con al menos 200 piezas": el número es un umbral, no una
+			# submarca (el catálogo trae valores sueltos como "200"). Los
+			# numéricos solo se buscan si la pregunta habla de submarca.
+			and (habla_vehiculo or not re.fullmatch(r"\d{1,6}", str(v).strip()))
 		]
 		valor_tipo = _valor_mencionado(texto_busqueda, valores_tipo)
 		if valor_tipo:
@@ -6095,14 +6428,9 @@ def _tabla_ficha_taller(spec, resultado, efectividad_previa):
 		return (filas_datos[0][columnas.index(alias)] or 0) if alias in columnas else 0
 
 	ingresadas = valor("ingresadas")
-	recolectadas = sum(
-		valor(alias)
-		for alias in (
-			"recolectadas",
-			"recolectadas_inconsistentes",
-			"recolectadas_periodo",
-		)
-	)
+	# Recolectadas = en periodo + inconsistentes; las rezagadas no suman
+	# (dueño, 2026-11-21). La varianza de efectividad se mide con esta cifra.
+	recolectadas = valor("recolectadas") + valor("recolectadas_inconsistentes")
 	no_recolectadas = valor("no_recolectadas")
 	efectividad = (recolectadas / ingresadas * 100) if ingresadas else 0.0
 	if efectividad_previa is None:
@@ -6865,6 +7193,47 @@ def _desplazar_anios(rango, anios):
 	return f"{_dia(desde)} 00:00:00", f"{_dia(hasta)} 23:59:59"
 
 
+def _spec_un_anio_antes(spec):
+	"""Copia del spec con todos los `between` de fecha corridos un año atrás.
+
+	Sirve para la columna "Interanual" de las series de crecimiento: la consulta
+	del año anterior se ejecuta aparte y el código compara el mismo bloque.
+	"""
+	nuevo = json.loads(json.dumps(spec))
+
+	def mover(filtros):
+		for campo in CAMPOS_DE_FECHA:
+			valor = filtros.get(campo)
+			if valor is None:
+				continue
+			condiciones = _condiciones(valor)
+			es_lista = isinstance(valor, list) and valor and isinstance(valor[0], list)
+			for cond in condiciones:
+				if _es_between(cond):
+					cond[1], cond[2] = _desplazar_anios((cond[1], cond[2]), -1)
+			if es_lista:
+				filtros[campo] = condiciones
+			elif condiciones:
+				filtros[campo] = condiciones[0]
+
+	mover(nuevo.get("filters") or {})
+	for agg in nuevo.get("aggregations") or []:
+		mover(agg.get("filtros") or {})
+	return nuevo
+
+
+def _resultado_un_anio_antes(spec, user, alcance, tiempos=None):
+	"""Ejecuta la misma consulta un año antes (columna "Interanual")."""
+	try:
+		inicio = time.perf_counter()
+		resultado = ejecutar(_spec_un_anio_antes(spec), user, alcance=alcance)
+		if tiempos is not None:
+			tiempos["bd_ms"] += int((time.perf_counter() - inicio) * 1000)
+		return resultado
+	except (SpecInvalida, frappe.PermissionError):
+		return None
+
+
 def _filtros_sin_fecha(spec):
 	"""Filtros globales que no son fecha ni la definición de recolectable: cada
 	consulta derivada pone sus propias fechas y la unión de recolectadas."""
@@ -7191,7 +7560,7 @@ def _encabezado_de(argumentos):
 
 
 RE_INVITACION = re.compile(
-	r"^\s*(?:[-*_]{1,2}\s*)?sugerencia\s*:\s*(?:\*\*|__)?\s*(.+?)\s*$",
+	r"^\s*(?:[-*_]{1,2}\s*)?sugerencia\s*:\s*(?:\*\*|__)?\s*(.*?)\s*$",
 	re.IGNORECASE,
 )
 
@@ -7211,7 +7580,10 @@ def _extraer_invitacion(texto):
 			continue
 		invitacion = match.group(1).strip().strip("\"“”'*_ ")
 		if not invitacion:
-			continue
+			# "Sugerencia:" sin texto (el modelo se quedó a medias): se quita el
+			# marcador para que no aparezca colgado en la respuesta.
+			resto = "\n".join(lineas[:i] + lineas[i + 1:]).rstrip()
+			return resto, ""
 		resto = "\n".join(lineas[:i] + lineas[i + 1:]).rstrip()
 		return resto, invitacion
 	return texto, ""
@@ -7264,13 +7636,180 @@ def _verificar_lectura(texto, info_exp, pregunta, spec, resultado, argumentos, i
 	return _encabezado_de(argumentos), "Degradada", quitados
 
 
-def _preguntas_sugeridas(pack, modo, analisis_omitido):
-	"""Botones de seguimiento: solo en modo analítico, con análisis y si está activado."""
+def _modo_sugerencias():
+	"""Modo configurado para las preguntas sugeridas (Settings)."""
+	modo = frappe.get_cached_doc("Molduplastic IA Settings").modo_sugerencias
+	return modo if modo in _playbooks.MODOS_SUGERENCIAS else _playbooks.MODO_SUGERENCIAS_DEFECTO
+
+
+def _sugerencias_habilitadas(pack, modo, analisis_omitido):
+	"""Gate común: solo en modo analítico, con análisis y si está activado."""
 	if modo != "Analítico" or analisis_omitido or not pack:
-		return []
-	if not frappe.get_cached_doc("Molduplastic IA Settings").preguntas_sugeridas_activas:
-		return []
-	return _playbooks.preguntas_para(pack["analisis"]["tipo"])
+		return False
+	return bool(frappe.get_cached_doc("Molduplastic IA Settings").preguntas_sugeridas_activas)
+
+
+def _sugerencias_configuradas(pack):
+	"""(preguntas, origen) de los modos que no dependen del modelo."""
+	tipo = ((pack or {}).get("analisis") or {}).get("tipo") or "general"
+	modo = _modo_sugerencias()
+	if modo == "Playbook":
+		return _playbooks.preguntas_para(tipo), "Playbook"
+	if modo == "Hallazgos + catálogo":
+		return (
+			_playbooks.completar_con_playbook(
+				_playbooks.preguntas_por_hallazgos((pack or {}).get("hallazgos")), tipo
+			),
+			"Hallazgos + catálogo",
+		)
+	return [], "Modelo libre"
+
+
+def _sugerencias_finales(pack, modo, analisis_omitido, modelo=None):
+	"""Resuelve las preguntas y su origen efectivo (dueño, 2026-11-23)."""
+	if not _sugerencias_habilitadas(pack, modo, analisis_omitido):
+		return [], ""
+	configuradas, origen = _sugerencias_configuradas(pack)
+	if origen != "Modelo libre":
+		return configuradas, origen
+	if modelo:
+		return modelo, "Modelo libre"
+	# El modelo no propuso nada válido: respaldo determinista (C → playbook).
+	tipo = ((pack or {}).get("analisis") or {}).get("tipo") or "general"
+	por_hallazgos = _playbooks.preguntas_por_hallazgos((pack or {}).get("hallazgos"))
+	if por_hallazgos:
+		return (
+			_playbooks.completar_con_playbook(por_hallazgos, tipo),
+			"Hallazgos + catálogo",
+		)
+	return _playbooks.preguntas_para(tipo), "Playbook"
+
+
+def _preguntas_sugeridas(pack, modo, analisis_omitido):
+	"""Preguntas configuradas para el prompt (Playbook/C; Modelo libre → [])."""
+	return _sugerencias_configuradas(pack)[0] if _sugerencias_habilitadas(
+		pack, modo, analisis_omitido
+	) else []
+
+
+def _sugerencias_id(modo, preguntas):
+	"""Id estable del set de sugerencias (modo + preguntas) para la trazabilidad."""
+	base = json.dumps([modo or "", list(preguntas or [])], ensure_ascii=False)
+	return hashlib.sha1(base.encode()).hexdigest()[:16]
+
+
+RE_SUGERENCIAS = re.compile(r"\[SUGERENCIAS\](.*?)\[/SUGERENCIAS\]", re.DOTALL | re.IGNORECASE)
+
+
+def _extraer_sugerencias(texto):
+	"""Quita el bloque [SUGERENCIAS]…[/SUGERENCIAS] y devuelve sus preguntas."""
+	fuente = str(texto or "")
+	m = RE_SUGERENCIAS.search(fuente)
+	if not m:
+		return texto, []
+	preguntas = [p.strip(" *_-") for p in m.group(1).split("|")]
+	resto = (fuente[: m.start()] + fuente[m.end():]).strip()
+	resto = re.sub(r"\n{3,}", "\n\n", resto)
+	return resto, [p for p in preguntas if p]
+
+
+PALABRAS_SOPORTADAS = (
+	"pieza",
+	"siniestro",
+	"recolecc",
+	"recolect",
+	"taller",
+	"marca",
+	"submarca",
+	"region",
+	"plaza",
+	"estado",
+	"parte",
+	"precio",
+	"valor",
+	"efectividad",
+	"volumen",
+	"pendiente",
+	"entregada",
+	"localizada",
+	"modelo",
+	"pais",
+)
+
+
+def _sugerencia_valida(texto):
+	"""Una pregunta del modelo solo se ofrece si el motor puede contestarla."""
+	t = str(texto or "").strip().strip("*_\"' ")
+	if not 8 <= len(t) <= 140:
+		return False
+	if "?" not in t:
+		return False
+	if re.search(r"\d", t):
+		# Sin cifras: el verificador no las tendría en los Datos y el chip
+		# arrastraría un umbral o un período inventado.
+		return False
+	plano = _sin_acentos(t)
+	if "por que" in plano or "porque" in plano or "causa" in plano:
+		return False
+	if _aseguradoras_mencionadas(t):
+		return False
+	return any(palabra in plano for palabra in PALABRAS_SOPORTADAS)
+
+
+def _sugerencias_validas(preguntas):
+	"""Filtra, deduplica y recorta a MAX_SUGERIDAS las preguntas del modelo."""
+	salida = []
+	for pregunta in preguntas or []:
+		if not _sugerencia_valida(pregunta):
+			continue
+		if pregunta in salida:
+			continue
+		salida.append(pregunta)
+		if len(salida) >= _playbooks.MAX_SUGERIDAS:
+			break
+	return salida
+
+
+def _origen_de_la_pregunta(conversacion, sugerencia_id, sugerencia_modo, sugerencia_indice):
+	"""Clasifica la pregunta como escrita o sugerida y valida el set ofrecido."""
+	origen = {
+		"origen_pregunta": "Escrita",
+		"sugerencia_modo": "",
+		"sugerencia_indice": 0,
+		"sugerencia_id": sugerencia_id or "",
+	}
+	if not sugerencia_id:
+		return origen
+	origen["origen_pregunta"] = "Sugerencia"
+	try:
+		indice = int(sugerencia_indice or 0)
+	except (TypeError, ValueError):
+		indice = 0
+	if 1 <= indice <= _playbooks.MAX_SUGERIDAS:
+		origen["sugerencia_indice"] = indice
+	if not conversacion or not frappe.db.exists("IA Conversacion", conversacion):
+		return origen
+	doc = frappe.get_doc("IA Conversacion", conversacion)
+	previas, modo_previo = "", ""
+	for mensaje in reversed(doc.mensajes):
+		if mensaje.rol == "asistente":
+			previas = mensaje.get("sugerencias_json") or ""
+			modo_previo = mensaje.get("sugerencias_modo") or ""
+			break
+	if not previas:
+		return origen
+	try:
+		lista = json.loads(previas)
+	except (TypeError, ValueError):
+		return origen
+	if sugerencia_id == _sugerencias_id(modo_previo, lista):
+		origen["sugerencia_modo"] = modo_previo
+	elif sugerencia_modo in _playbooks.MODOS_SUGERENCIAS:
+		# Id que no corresponde al último turno (cliente viejo): se conserva que
+		# vino de un chip, sin atribuirlo a un modo.
+		origen["sugerencia_modo"] = ""
+		origen["sugerencia_indice"] = 0
+	return origen
 
 
 def _metricas_analisis(pack):
@@ -7301,6 +7840,7 @@ def _explicacion_en_codigo(spec, pregunta):
 		or _es_crecimiento_dimension(spec, pregunta)
 		or _pide_mapa_efectividad(pregunta)
 		or bool(_pide_mezcla_volumen_efectividad(pregunta))
+		or _pide_recoleccion_por_bloque(pregunta)
 		or bool(_pide_porcentaje_de_categorias(pregunta))
 		or bool(_pide_porcentaje_por_dimension(pregunta))
 		or _es_tabla_comparativa(spec, pregunta)
@@ -7310,7 +7850,7 @@ def _explicacion_en_codigo(spec, pregunta):
 
 
 @frappe.whitelist()
-def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, hasta=None, progreso_id=None, **_ignorados):
+def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, hasta=None, progreso_id=None, sugerencia_id=None, sugerencia_indice=None, sugerencia_modo=None, **_ignorados):
 	"""Flujo completo: universo -> spec -> validación -> ejecución -> explicación.
 
 	El modo de respuesta no es un parámetro del cliente: cualquier clave extra
@@ -7376,6 +7916,14 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		universo = propias[0]
 		aseguradora_log = propias[0]
 	consulta_id = frappe.generate_hash(length=10)
+	# Trazabilidad: si la pregunta vino de un botón de sugerencia, se valida el
+	# id del set ofrecido en el turno anterior (el modo efectivo lo pone el
+	# servidor, no el cliente).
+	origen_info = _origen_de_la_pregunta(
+		conversacion, sugerencia_id, sugerencia_modo, sugerencia_indice
+	)
+	config_sugerencias = _modo_sugerencias()
+	modelo_sugerencias = []
 	inicio_ask = time.time()
 	# Cronómetros de las etapas: el total es tiempo de pared del turno; la
 	# construcción es el código que arma el SQL y la BD es ejecutar(). El LLM
@@ -7398,13 +7946,16 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	if categoria:
 		_log_llamada({}, "generate_spec", SENSIBLE, consulta_id, user, aseguradora_log, categoria)
 		doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
-		_guardar_mensajes(
-			doc, pregunta, MENSAJE_SENSIBLE, None, None, None, primera=not conversacion, universo=universo
+		mensaje_id = _guardar_mensajes(
+			doc, pregunta, MENSAJE_SENSIBLE, None, None, None,
+			primera=not conversacion, universo=universo, consulta_id=consulta_id,
+			alcance_id=alcance or "",
 		)
 		return {
 			"ok": True,
 			"respuesta": MENSAJE_SENSIBLE,
 			"mensaje": MENSAJE_SENSIBLE,
+			"mensaje_id": mensaje_id,
 			"conversacion": doc.name,
 			"universo": universo,
 			"universo_nombre": _nombre_aseguradora(universo),
@@ -7490,6 +8041,7 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	spec = _completar_ficha_taller(spec, pregunta_det)
 	spec = _completar_sin_lista_de_precios(spec, pregunta_det)
 	spec = _completar_singular_plural(spec, pregunta_det)
+	spec = _completar_recoleccion_por_bloque(spec, pregunta_det)
 	spec = _completar_comparacion(spec, pregunta_det)
 	spec = _sanear_order_by(spec)
 	spec = _aplicar_periodo(spec, periodo, pregunta, desde, hasta)
@@ -7512,14 +8064,16 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		if etiqueta:
 			mensaje = f"{mensaje}\n\n{etiqueta}"
 		doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
-		_guardar_mensajes(
+		mensaje_id = _guardar_mensajes(
 			doc, pregunta, mensaje, None, None, None,
-			primera=not conversacion, universo=universo,
+			primera=not conversacion, universo=universo, consulta_id=consulta_id,
+			alcance_id=alcance or "",
 		)
 		return {
 			"ok": True,
 			"fuera_de_alcance": True,
 			"mensaje": mensaje,
+			"mensaje_id": mensaje_id,
 			"conversacion": doc.name,
 			"universo": universo,
 			"universo_nombre": _nombre_aseguradora(universo),
@@ -7554,8 +8108,10 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 			historial=historial,
 		)
 		doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
-		_guardar_mensajes(
-			doc, pregunta, texto, spec, None, None, primera=not conversacion, universo=universo
+		mensaje_id = _guardar_mensajes(
+			doc, pregunta, texto, spec, None, None,
+			primera=not conversacion, universo=universo, consulta_id=consulta_id,
+			alcance_id=alcance or "",
 		)
 		return {
 			"ok": True,
@@ -7563,6 +8119,7 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 			"universo": universo,
 			"universo_nombre": _nombre_aseguradora(universo),
 			"respuesta": texto,
+			"mensaje_id": mensaje_id,
 			"sin_consulta": True,
 		}
 
@@ -7653,6 +8210,19 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	# rankings, listados de precio, comparativas, crecimiento…) no gastan una
 	# llamada al modelo: el proveedor puede tardar 20-80 s y el proxy corta a
 	# los 240 s ("Error de conexión"). El texto del modelo se descartaba igual.
+	# Veredicto de la efectividad (dueño, 2026-11-21): intervalo de Wilson y
+	# cambio contra el período anterior. Solo para el total o un top de un
+	# grupo; el desglose completo ya trae el intervalo por fila.
+	veredicto_efectividad = None
+	if (
+		not lados_contra
+		and not _pide_recoleccion_por_bloque(pregunta_det)
+		and _es_spec_efectividad(spec)
+	):
+		inicio_bd = time.perf_counter()
+		veredicto_efectividad = _veredicto_efectividad(spec, resultado, user, alcance)
+		tiempos_etapas["bd_ms"] += int((time.perf_counter() - inicio_bd) * 1000)
+
 	explicacion_en_codigo = _explicacion_en_codigo(spec, pregunta_det) or bool(lados_contra)
 	info_exp = {}
 	log_explain = None
@@ -7714,17 +8284,28 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 					spec, resultado, universo, user, alcance, presupuesto,
 					registro=registro_complementaria,
 				)
-				# Las sugeridas se conocen antes de redactar: viajan al prompt para
-				# que el modelo cierre con una invitación propia (no fija).
-				argumentos["sugerencias"] = _preguntas_sugeridas(
+				# Las sugerencias configuradas (Playbook/C) viajan al prompt para
+				# que el modelo cierre con una invitación pertinente. En "Modelo
+				# libre" se pide el bloque [SUGERENCIAS] y se valida después.
+				sugerencias_ok = _sugerencias_habilitadas(
 					pack, modo_pedido, analisis_omitido
 				)
+				if sugerencias_ok:
+					if config_sugerencias == "Modelo libre":
+						argumentos["sugerencias_libres"] = True
+					else:
+						argumentos["sugerencias"] = _preguntas_sugeridas(
+							pack, modo_pedido, analisis_omitido
+						)
 				_marcar_progreso(progreso_id, "respuesta")
 				explicacion, info_exp = explain(
 					pregunta_det, spec, resultado, **argumentos,
 					modo="Analítico", intencion=intencion,
 					deadline=presupuesto.limite, analisis=pack,
 				)
+				if sugerencias_ok and config_sugerencias == "Modelo libre":
+					explicacion, modelo_sugerencias = _extraer_sugerencias(explicacion)
+					modelo_sugerencias = _sugerencias_validas(modelo_sugerencias)
 				info_exp.update(_metricas_analisis(pack))
 				explicacion, info_exp["verificacion"], quitados = _verificar_lectura(
 					explicacion, info_exp, pregunta_det, spec, resultado, argumentos,
@@ -7840,9 +8421,28 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		and not _es_crecimiento_periodos(spec, pregunta_det)
 		and len(spec.get("group_by") or []) == 1
 	):
-		filas_serie = _serie_con_variacion(resultado)
+		# Las columnas de tendencia solo van si la pregunta las pide.
+		con_interanual = _pide_interanual(pregunta_det) or _pide_columnas_de_tendencia(
+			pregunta_det
+		)
+		con_promedio = _pide_promedio_movil(pregunta_det) or _pide_columnas_de_tendencia(
+			pregunta_det
+		)
+		previo = (
+			_resultado_un_anio_antes(spec, user, alcance, tiempos_etapas)
+			if con_interanual
+			else None
+		)
+		filas_serie = _serie_con_variacion(
+			resultado, previo, con_interanual, con_promedio
+		)
 		if filas_serie:
-			resultado["columnas"] = ["mes", "siniestros", "variacion"]
+			columnas_serie = ["mes", "siniestros", "variacion"]
+			if con_interanual:
+				columnas_serie.append("interanual")
+			if con_promedio:
+				columnas_serie.append("promedio_3")
+			resultado["columnas"] = columnas_serie
 			resultado["filas"] = filas_serie
 		partes = [_titulo_respuesta(spec)]
 		periodo_txt = _texto_periodo(pregunta, spec)
@@ -7886,15 +8486,34 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		explicacion = "\n\n".join(partes)
 
 	if _es_crecimiento_periodos(spec, pregunta_det):
-		# Serie por mes/trimestre/cuatrimestre con la variación contra el bloque
-		# anterior: la tabla y el texto los arma el código (dueño, 2026-11-07).
+		# Serie por bloque con la variación contra el bloque anterior; el
+		# interanual y el promedio móvil solo si la pregunta los pide (dueño,
+		# 2026-11-22).
 		granularidad = _granularidad_de_crecimiento(pregunta_det)
-		filas_bloque, medida = _serie_por_bloque(resultado, granularidad)
+		con_interanual = _pide_interanual(pregunta_det) or _pide_columnas_de_tendencia(
+			pregunta_det
+		)
+		con_promedio = _pide_promedio_movil(pregunta_det) or _pide_columnas_de_tendencia(
+			pregunta_det
+		)
+		previo = (
+			_resultado_un_anio_antes(spec, user, alcance, tiempos_etapas)
+			if con_interanual
+			else None
+		)
+		filas_bloque, medida = _serie_por_bloque(
+			resultado, granularidad, previo, con_interanual, con_promedio
+		)
 		columna = {"mes": "mes", "trimestre": "trimestre", "cuatrimestre": "cuatrimestre"}[
 			granularidad
 		]
 		if filas_bloque:
-			resultado["columnas"] = [columna, medida, "variacion"]
+			columnas_bloque = [columna, medida, "variacion"]
+			if con_interanual:
+				columnas_bloque.append("interanual")
+			if con_promedio:
+				columnas_bloque.append("promedio_3")
+			resultado["columnas"] = columnas_bloque
 			resultado["filas"] = filas_bloque
 		else:
 			resultado["filas"] = []
@@ -8039,6 +8658,51 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 
 	# Tabla comparativa: el cruce lo arma el código, no el modelo (`_pivot`).
 	tabla_comparativa = None
+	if _pide_recoleccion_por_bloque(pregunta_det):
+		# "Qué mes/bimestre/trimestre/cuatrimestre tiene mayor/menor
+		# recolección": efectividad por bloque del año, con la tabla completa y
+		# la frase con el mayor y el menor (dueño, 2026-11-21).
+		granularidad_bloques = _granularidad_de_bloques(pregunta_det)
+		tabla_bloques, mejor_bloque, peor_bloque, bloque_en_curso = (
+			_tabla_recoleccion_por_bloque(
+				spec, resultado, granularidad_bloques, pregunta_det
+			)
+		)
+		if tabla_bloques:
+			etiqueta_bloque = {
+				"mes": "Mes",
+				"bimestre": "Bimestre",
+				"trimestre": "Trimestre",
+				"cuatrimestre": "Cuatrimestre",
+			}[granularidad_bloques]
+			tabla_comparativa = {
+				"columnas": [
+					etiqueta_bloque,
+					"Ingresadas",
+					"Recolectadas",
+					"Efectividad",
+					"Objetivo",
+				],
+				"filas": tabla_bloques,
+			}
+		partes = [_titulo_recoleccion_por_bloque(granularidad_bloques)]
+		periodo_txt = _texto_periodo(pregunta, spec)
+		if periodo_txt:
+			partes.append(periodo_txt)
+		if mejor_bloque and peor_bloque:
+			partes.append(
+				f"Mayor recolección: {mejor_bloque[0]} ({mejor_bloque[3]} de "
+				f"{mejor_bloque[1]:,} ingresadas). Menor: {peor_bloque[0]} "
+				f"({peor_bloque[3]} de {peor_bloque[1]:,})."
+			)
+		else:
+			partes.append(
+				"No hay bloques con piezas ingresadas suficientes en el año."
+			)
+		if bloque_en_curso:
+			partes.append("No se considera el bloque en curso, que aún no termina.")
+		explicacion = "\n\n".join(partes)
+
 	if _es_tabla_comparativa(spec, pregunta_det):
 		dinero = bool(_columnas_de_dinero(spec))
 		columnas_piv, filas_piv, total_columnas = _pivot(
@@ -8069,7 +8733,11 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 			)
 		explicacion = "\n\n".join(partes)
 
-	if _pide_recolectan_mas(pregunta_det) and _es_spec_efectividad(spec):
+	if (
+		_pide_recolectan_mas(pregunta_det)
+		and _es_spec_efectividad(spec)
+		and not _pide_recoleccion_por_bloque(pregunta_det)
+	):
 		# "más se recolectan" se contesta con la tabla de Ingresadas, Recolectadas
 		# y Efectividad: el modelo la resumía en una línea ("Cellini es el que más
 		# recolecta…") y el dueño pidió las tres cifras.
@@ -8276,9 +8944,18 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	# cosa. No se nombra a la otra aseguradora (no se confirma su existencia).
 	etiqueta = _etiqueta_alcance(pregunta, universo)
 	if etiqueta and _texto_normalizado(etiqueta) not in _texto_normalizado(explicacion):
-		explicacion = f"{explicacion}\n\n{etiqueta}"
+		explicacion = _con_linea_antes_del_analisis(explicacion, etiqueta)
 	if nota_analisis:
 		explicacion = f"{explicacion}\n\n{nota_analisis}"
+	if veredicto_efectividad:
+		# Línea del servidor: el modelo no compara ni calcula intervalos.
+		frase_veredicto = _frase_veredicto_efectividad(veredicto_efectividad)
+		if _texto_normalizado(frase_veredicto) not in _texto_normalizado(explicacion):
+			explicacion = _con_linea_antes_del_analisis(explicacion, frase_veredicto)
+	if _es_spec_efectividad(spec):
+		# La tabla de efectividad la pinta la app (con el intervalo y sin
+		# columnas de tendencia): la que escriba el modelo se descarta.
+		explicacion = _sin_tablas_markdown(explicacion)
 
 	# La efectividad se pinta con la dimensión y las cuatro columnas del criterio;
 	# el resultado crudo (total, recolectadas, inconsistentes, rezagadas) no sale
@@ -8291,11 +8968,37 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	if tabla_comparativa is not None:
 		mostrar = tabla_comparativa
 	rango_consultado = _rango_del_spec(spec)
+	sugeridas, origen_sugerencias = _sugerencias_finales(
+		pack, modo_pedido, analisis_omitido, modelo_sugerencias
+	)
+	sugerencias_id_final = (
+		_sugerencias_id(origen_sugerencias, sugeridas) if sugeridas else ""
+	)
 	doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
-	_guardar_mensajes(
+	mensaje_id = _guardar_mensajes(
 		doc, pregunta, explicacion, spec, mostrar, resultado["cobertura"],
 		primera=not conversacion, universo=universo,
+		origen=origen_info,
+		sugerencias=sugeridas,
+		sugerencias_modo=origen_sugerencias,
+		sugerencias_id=sugerencias_id_final,
+		consulta_id=consulta_id,
+		alcance_id=alcance or "",
 	)
+	# Trazabilidad del turno en todas las filas del log (generate_spec, explain
+	# y fallos): se escribe al final, cuando ya existen.
+	if consulta_id:
+		campos_log = {
+			k: v
+			for k, v in origen_info.items()
+			if k in ("origen_pregunta", "sugerencia_modo", "sugerencia_indice")
+		}
+		for nombre_log in frappe.get_all(
+			"IA API Log", filters={"consulta_id": consulta_id}, pluck="name"
+		):
+			frappe.db.set_value(
+				"IA API Log", nombre_log, campos_log, update_modified=False
+			)
 	# Las cifras de las etapas van en la última fila del log del turno (la
 	# explicación): a esta altura ya corrieron también las consultas derivadas
 	# (ficha, comparación de períodos) y el armado de la respuesta.
@@ -8311,14 +9014,20 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 			},
 			update_modified=False,
 		)
-	sugeridas = _preguntas_sugeridas(pack, modo_pedido, analisis_omitido)
 	return {
 		"ok": True,
 		"conversacion": doc.name,
 		"universo": universo,
 		"universo_nombre": _nombre_aseguradora(universo),
 		"periodo": "este_anio" if ajuste_promedio else periodo,
+		# Fila de IA Mensaje de esta respuesta: el chat la usa para calificarla.
+		"mensaje_id": mensaje_id,
 		"preguntas_sugeridas": sugeridas,
+		# Origen efectivo de los botones (Playbook / Hallazgos + catálogo /
+		# Modelo libre) y el id del set para saber si el siguiente turno vino
+		# de aquí (trazabilidad).
+		"sugerencias_modo": origen_sugerencias,
+		"sugerencias_id": sugerencias_id_final,
 		# La invitación la redactó el modelo junto con la respuesta; sin
 		# sugeridas no se manda nada (los botones nunca llevan texto fijo).
 		"texto_sugerencias": texto_sugerencias if sugeridas else "",
@@ -8365,8 +9074,9 @@ def _tabla_efectividad(spec, porcentajes):
 	"""Tabla de presentación de la efectividad, sin los alias internos.
 
 	El resultado crudo trae `total`, `recolectadas`, `inconsistentes_recolectadas`
-	y `rezagadas_recolectadas`; en el chat solo van la dimensión y las cuatro
-	columnas del criterio (decisión del dueño 2026-10-26).
+	y `rezagadas_recolectadas`; en el chat van la dimensión, las cuatro columnas
+	del criterio y el intervalo de confianza 95 % (Wilson) de la proporción
+	(2026-11-21). El modelo no calcula nada de esto.
 	"""
 	if not porcentajes:
 		return None
@@ -8377,7 +9087,7 @@ def _tabla_efectividad(spec, porcentajes):
 	con_dimension = bool(dimensiones)
 	columnas = (
 		([" / ".join(dimensiones)] if con_dimension else [])
-		+ ["Ingresadas", "Recolectadas", "Efectividad", "Objetivo"]
+		+ ["Ingresadas", "Recolectadas", "Efectividad", "Intervalo 95%", "Objetivo"]
 	)
 	filas = [
 		(
@@ -8386,12 +9096,108 @@ def _tabla_efectividad(spec, porcentajes):
 				p.get("total") or 0,
 				p.get("recuperadas") or 0,
 				f"{p.get('pct') or 0:.1f}%",
+				p.get("intervalo") or "—",
 				p.get("vs_objetivo") or "",
 			]
 		)
 		for p in porcentajes
 	]
 	return columnas, filas
+
+
+def _prueba_dos_proporciones(rec_a, n_a, rec_b, n_b):
+	"""z y p-valor de dos proporciones (aprox. normal, dos colas)."""
+	if not n_a or not n_b:
+		return None, None
+	p1, p2 = (rec_a or 0) / n_a, (rec_b or 0) / n_b
+	p = ((rec_a or 0) + (rec_b or 0)) / (n_a + n_b)
+	var = p * (1 - p) * (1 / n_a + 1 / n_b)
+	if var <= 0:
+		return None, None
+	z = (p1 - p2) / math.sqrt(var)
+	return z, math.erfc(abs(z) / math.sqrt(2))
+
+
+def _veredicto_efectividad(spec, resultado, user, alcance):
+	"""Compara la efectividad con el período anterior (dueño, 2026-11-21).
+
+	Solo aplica al total (sin `group_by`) o a una sola fila (el top de un
+	grupo); en un desglose completo cada grupo tendría su propia comparación y
+	la tabla ya trae el intervalo. La consulta del período anterior se ejecuta
+	aquí (no cabe en el WHERE del actual) con los mismos filtros que no son
+	fecha. Devuelve el dict con la cifra o None.
+	"""
+	if not _es_spec_efectividad(spec):
+		return None
+	porcentajes = _porcentajes(spec, resultado)
+	if not porcentajes or len(porcentajes) > 1:
+		return None
+	actual = porcentajes[0]
+	total = actual.get("total") or 0
+	rec = actual.get("recuperadas") or 0
+	if total <= 0:
+		return None
+	rango = _periodo_del_spec(spec) or _periodo_mes_actual()
+	previo_rango = _periodo_anterior(rango)
+	filtros = {
+		k: v
+		for k, v in (spec.get("filters") or {}).items()
+		if k not in CAMPOS_DE_FECHA and k != "recolectable"
+	}
+	spec_prev = {
+		"doctype": "Pieza",
+		"fields": [],
+		"filters": filtros,
+		"aggregations": _aggs_efectividad(*previo_rango),
+		"group_by": list(spec.get("group_by") or []),
+		"order_by": [],
+		# El grupo del top actual puede estar entre muchos: se piden todos los
+		# que devuelve el SQL (500) para encontrarlo por su etiqueta.
+		"limit": 500,
+	}
+	try:
+		res_prev = ejecutar(spec_prev, user, alcance=alcance)
+	except (SpecInvalida, frappe.PermissionError):
+		return None
+	pcts_prev = _porcentajes(spec_prev, res_prev)
+	if not pcts_prev:
+		return None
+	previo = pcts_prev[0]
+	if actual.get("grupo"):
+		previo = next(
+			(p for p in pcts_prev if p.get("grupo") == actual.get("grupo")), None
+		)
+	if not previo or not (previo.get("total") or 0):
+		return None
+	_, pval = _prueba_dos_proporciones(
+		rec, total, previo.get("recuperadas") or 0, previo.get("total") or 0
+	)
+	return {
+		"pct": actual.get("pct") or 0,
+		"intervalo": actual.get("intervalo") or "",
+		"margen_pp": actual.get("margen_pp") or 0,
+		"pct_previo": previo.get("pct") or 0,
+		"pp": round((actual.get("pct") or 0) - (previo.get("pct") or 0), 1),
+		"significativo": bool(pval is not None and pval < 0.05),
+		"p_valor": round(pval, 3) if pval is not None else None,
+		"periodo_previo": previo_rango,
+	}
+
+
+def _frase_veredicto_efectividad(veredicto):
+	"""Línea determinista del intervalo y el cambio contra el período anterior."""
+	periodo = _etiqueta_de_rango(veredicto["periodo_previo"])
+	cierre = (
+		"el cambio es significativo"
+		if veredicto["significativo"]
+		else "el cambio no es significativo"
+	)
+	return (
+		f"Efectividad {veredicto['pct']:.1f}% "
+		f"(intervalo 95%: {veredicto['intervalo']}, ±{veredicto['margen_pp']:.1f} pp). "
+		f"Contra {periodo} ({veredicto['pct_previo']:.1f}%): "
+		f"{veredicto['pp']:+.1f} pp; {cierre}."
+	)
 
 
 # Encabezados legibles para las columnas que llegan crudas del SQL. El resto
@@ -8414,6 +9220,8 @@ ETIQUETAS_COLUMNA = {
 	"trimestre": "Trimestre",
 	"cuatrimestre": "Cuatrimestre",
 	"variacion": "Variación",
+	"interanual": "Interanual",
+	"promedio_3": "Promedio 3",
 	"anterior": "Bloque anterior",
 	"actual": "Bloque actual",
 	"estado": "Estado",
@@ -8598,7 +9406,7 @@ def _tabla_para_chat_base(spec, resultado, porcentajes, datos=None):
 		columnas, filas = _tabla_no_recuperadas(spec, datos, totales)
 		return {"columnas": columnas, "filas": filas}
 	recolectadas = datos.get("recolectadas_por_fila")
-	if recolectadas is not None:
+	if recolectadas is not None and not _es_spec_efectividad(spec):
 		columnas, filas = _tabla_no_recuperadas(
 			spec, datos, recolectadas, etiqueta="Recolectadas"
 		)
@@ -8609,6 +9417,11 @@ def _tabla_para_chat_base(spec, resultado, porcentajes, datos=None):
 	if spec.get("render_chart"):
 		return resultado
 	if _es_spec_efectividad(spec):
+		if datos.get("porcentajes") is not None:
+			# `explain` corrió y no dejó ninguna fila que pase el corte de
+			# ingresadas: no se pinta la tabla cruda (traería los grupos
+			# descartados y contradiría el "no hay").
+			return {"columnas": None, "filas": None}
 		# Sin `explain` (proveedor caído) no venían los porcentajes; se calculan
 		# aquí para no perder la tabla cuando hay más de una fila.
 		tabla = _tabla_efectividad(spec, _porcentajes(spec, resultado))
@@ -8628,12 +9441,15 @@ def _tabla_para_chat_base(spec, resultado, porcentajes, datos=None):
 
 
 def _guardar_mensajes(
-	doc, pregunta, respuesta, spec, resultado, cobertura, primera=False, universo=""
+	doc, pregunta, respuesta, spec, resultado, cobertura, primera=False, universo="",
+	origen=None, sugerencias=None, sugerencias_modo="", sugerencias_id="", consulta_id="",
+	alcance_id="",
 ):
 	ahora = _ahora()
 	# El universo se guarda legible ("GNP", no "6"): es para auditar cada turno
 	# cuando la conversación cambió de alcance a mitad de camino.
 	etiqueta_universo = _nombre_aseguradora(universo) if universo else ""
+	origen = origen or {}
 	doc.append(
 		"mensajes",
 		{
@@ -8641,6 +9457,12 @@ def _guardar_mensajes(
 			"fecha_hora": ahora,
 			"contenido": pregunta,
 			"universo": etiqueta_universo,
+			# Trazabilidad: si vino de un botón de sugerencia y con qué modo.
+			"origen_pregunta": origen.get("origen_pregunta") or "Escrita",
+			"sugerencia_modo": origen.get("sugerencia_modo") or "",
+			"sugerencia_indice": origen.get("sugerencia_indice") or 0,
+			"sugerencia_id": origen.get("sugerencia_id") or "",
+			"consulta_id": consulta_id or "",
 		},
 	)
 	doc.append(
@@ -8650,6 +9472,12 @@ def _guardar_mensajes(
 			"fecha_hora": ahora,
 			"contenido": respuesta,
 			"universo": etiqueta_universo,
+			# El alcance exacto del turno permite re-ejecutar la consulta para
+			# replicar la respuesta (vacío = las aseguradoras del usuario).
+			"alcance_id": alcance_id or "",
+			# El origen es de la pregunta; en la fila del asistente va vacío
+			# para no ensuciar la analítica por turno.
+			"origen_pregunta": "",
 			"spec_json": json.dumps(spec, ensure_ascii=False) if spec else "",
 			"datos_json": json.dumps(
 				{"columnas": resultado["columnas"], "filas": resultado["filas"]},
@@ -8659,12 +9487,21 @@ def _guardar_mensajes(
 			if resultado
 			else "",
 			"cobertura_json": json.dumps(cobertura, ensure_ascii=False, default=str) if cobertura else "",
+			# Set de sugerencias ofrecido en el turno (para el id de la
+			# siguiente pregunta y para auditar el modo).
+			"sugerencias_modo": sugerencias_modo or "",
+			"sugerencias_json": json.dumps(list(sugerencias or []), ensure_ascii=False),
+			"sugerencias_id": sugerencias_id or "",
+			"consulta_id": consulta_id or "",
 		},
 	)
 	if primera:
 		doc.titulo = (pregunta or "")[:60]
 	doc.ultima_actividad = ahora
 	doc.save(ignore_permissions=True)
+	# El chat califica la respuesta por su fila; se devuelve el nombre ya
+	# guardado (la fila del asistente es la última que se agregó).
+	return doc.mensajes[-1].name
 
 
 @frappe.whitelist()
@@ -8903,6 +9740,115 @@ def sugerencias():
 
 
 @frappe.whitelist()
+def sugerencias_uso(periodo=None, desde=None, hasta=None):
+	"""Uso de las preguntas sugeridas del análisis, por modo (solo admin).
+
+	`ofertas` = respuestas analíticas que ofrecieron chips (por `sugerencias_modo`);
+	`clics` = preguntas que llegaron desde un chip (por `sugerencia_modo`, el modo
+	efectivo); `resueltos` = turnos con la fila `explain` en Éxito. Sirve para
+	comparar Playbook / Hallazgos / Modelo libre con datos reales.
+	"""
+	if "System Manager" not in frappe.get_roles(frappe.session.user):
+		frappe.throw(
+			"Solo un administrador consulta el uso de las sugerencias.",
+			frappe.PermissionError,
+		)
+	clave = periodo if periodo in {k for k, _ in PERIODOS_CONSULTA} else PERIODO_DEFAULT
+	if clave == PERIODO_PERSONALIZADO:
+		rango = _rango_personalizado(desde, hasta) or _rango_de_periodo(PERIODO_DEFAULT)
+	else:
+		rango = _rango_de_periodo(clave)
+	inicio, fin = rango
+	mensajes = frappe.get_all(
+		"IA Mensaje",
+		filters={"fecha_hora": ["between", [inicio, fin]]},
+		fields=[
+			"rol",
+			"origen_pregunta",
+			"sugerencia_modo",
+			"sugerencias_modo",
+			"sugerencias_json",
+			"consulta_id",
+		],
+		limit_page_length=0,
+	)
+	ofertas, clics, turnos = {}, {}, []
+	for m in mensajes:
+		modo = (m.sugerencias_modo or "").strip()
+		if m.rol == "asistente" and modo and (m.sugerencias_json or "").strip() not in ("", "[]"):
+			ofertas[modo] = ofertas.get(modo, 0) + 1
+		elif m.rol == "usuario" and (m.origen_pregunta or "") == "Sugerencia":
+			modo_clic = (m.sugerencia_modo or "").strip() or "Sin modo"
+			clics[modo_clic] = clics.get(modo_clic, 0) + 1
+			if m.consulta_id:
+				turnos.append((modo_clic, m.consulta_id))
+	logs = {}
+	if turnos:
+		ids = sorted({cid for _, cid in turnos})
+		for fila in frappe.get_all(
+			"IA API Log",
+			filters={"consulta_id": ["in", ids], "operacion": "explain"},
+			fields=[
+				"consulta_id",
+				"estado",
+				"es_fallback",
+				"verificacion",
+				"latencia_total_ms",
+				"tokens_entrada",
+				"tokens_salida",
+			],
+			limit_page_length=0,
+		):
+			logs[fila.consulta_id] = fila
+	por_modo = {}
+	for modo in sorted(set(ofertas) | set(clics)):
+		ofertas_modo = ofertas.get(modo, 0)
+		clics_modo = clics.get(modo, 0)
+		turnos_modo = [cid for m, cid in turnos if m == modo]
+		resueltos, con_fallback, sin_respaldo = 0, 0, 0
+		tokens, latencias = 0, []
+		for cid in turnos_modo:
+			fila = logs.get(cid)
+			if not fila:
+				continue
+			if fila.estado == "Éxito":
+				resueltos += 1
+			if fila.es_fallback:
+				con_fallback += 1
+			if (fila.verificacion or "") == "Con cifras sin respaldo":
+				sin_respaldo += 1
+			tokens += (fila.tokens_entrada or 0) + (fila.tokens_salida or 0)
+			if fila.latencia_total_ms:
+				latencias.append(fila.latencia_total_ms)
+		por_modo[modo] = {
+			"ofertas": ofertas_modo,
+			"clics": clics_modo,
+			"ctr": round(clics_modo / ofertas_modo * 100, 1) if ofertas_modo else 0.0,
+			"turnos": len(turnos_modo),
+			"resueltos": resueltos,
+			"tasa_exito": round(resueltos / len(turnos_modo) * 100, 1)
+			if turnos_modo
+			else 0.0,
+			"con_fallback": con_fallback,
+			"con_cifras_sin_respaldo": sin_respaldo,
+			"tokens": tokens,
+			"latencia_promedio_ms": round(sum(latencias) / len(latencias))
+			if latencias
+			else 0,
+		}
+	return {
+		"rango": {"desde": inicio, "hasta": fin},
+		"modos": por_modo,
+		"totales": {
+			"ofertas": sum(ofertas.values()),
+			"clics": sum(clics.values()),
+			"turnos": len(turnos),
+			"resueltos": sum(m["resueltos"] for m in por_modo.values()),
+		},
+	}
+
+
+@frappe.whitelist()
 def historial():
 	user = frappe.session.user
 	return frappe.get_all(
@@ -8914,6 +9860,146 @@ def historial():
 	)
 
 
+def _fila_de_mensaje(doc, mensaje_id, rol=None):
+	"""Fila de IA Mensaje por su nombre, dentro de la conversación."""
+	for fila in doc.mensajes or []:
+		if fila.name == mensaje_id and (not rol or fila.rol == rol):
+			return fila
+	return None
+
+
+@frappe.whitelist()
+def calificar_respuesta(conversacion, mensaje_id, calificacion, comentario=None):
+	"""Califica (Bien/Mal) una respuesta del asistente y guarda el comentario.
+
+	La calificación es del dueño de la conversación: un administrador puede ver
+	las conversaciones de otros, pero no calificar en su nombre. Volver a
+	calificar actualiza el mismo registro (no se duplica).
+	"""
+	user = frappe.session.user
+	if user == "Guest":
+		frappe.throw("Debes iniciar sesión.", frappe.PermissionError)
+	if not conversacion or not mensaje_id:
+		frappe.throw("Falta la conversación o la respuesta a calificar.")
+	doc = frappe.get_doc("IA Conversacion", conversacion)
+	if doc.usuario != user:
+		frappe.throw("Solo puedes calificar tus propias respuestas.", frappe.PermissionError)
+	if doc.estado == "Eliminada":
+		frappe.throw("Esta conversación fue eliminada.", frappe.PermissionError)
+	fila = _fila_de_mensaje(doc, mensaje_id, "asistente")
+	if not fila:
+		frappe.throw("La respuesta que intentas calificar no existe en esta conversación.")
+
+	valor = str(calificacion or "").strip().lower()
+	valor = {"bien": "Bien", "mal": "Mal"}.get(valor, "")
+	if not valor:
+		frappe.throw("La calificación debe ser Bien o Mal.")
+	comentario = str(comentario or "").strip()[:2000]
+	if valor == "Mal" and not comentario:
+		frappe.throw("Para calificar Mal escribe un comentario.")
+
+	# La pregunta es la del mensaje del usuario inmediatamente anterior.
+	pregunta = ""
+	for anterior in doc.mensajes or []:
+		if anterior.name == fila.name:
+			break
+		if anterior.rol == "usuario":
+			pregunta = anterior.contenido or ""
+
+	datos = {
+		"conversacion": doc.name,
+		"mensaje_id": fila.name,
+		"usuario": user,
+		"calificacion": valor,
+		"comentario": comentario,
+		"fecha_hora": frappe.utils.now_datetime(),
+		"pregunta": pregunta,
+		"universo": fila.universo or "",
+	}
+	existente = frappe.db.get_value(
+		"IA Calificacion",
+		{"conversacion": doc.name, "mensaje_id": fila.name, "usuario": user},
+		"name",
+	)
+	if existente:
+		doc_cal = frappe.get_doc("IA Calificacion", existente)
+		doc_cal.update(datos)
+		doc_cal.save(ignore_permissions=True)
+	else:
+		doc_cal = frappe.get_doc({"doctype": "IA Calificacion", **datos})
+		doc_cal.insert(ignore_permissions=True)
+	return {
+		"ok": True,
+		"calificacion": doc_cal.calificacion,
+		"comentario": doc_cal.comentario or "",
+		"fecha_hora": str(doc_cal.fecha_hora or ""),
+	}
+
+
+def _solo_administradores():
+	# No se usa frappe.only_for: en pruebas (flags.in_test) no comprueba nada.
+	if frappe.session.user != "Administrator" and "System Manager" not in frappe.get_roles():
+		raise frappe.PermissionError("Solo el administrador puede replicar una respuesta.")
+
+
+@frappe.whitelist()
+def replicar_calificacion(nombre):
+	"""Re-ejecuta la consulta de la respuesta calificada, sin llamar al modelo.
+
+	Se corre con el usuario dueño de la conversación y con el alcance guardado
+	en el turno, así ningún administrador ve datos fuera del tenant original.
+	"""
+	_solo_administradores()
+	cal = frappe.get_doc("IA Calificacion", nombre)
+	conv = frappe.get_doc("IA Conversacion", cal.conversacion)
+	fila = _fila_de_mensaje(conv, cal.mensaje_id, "asistente")
+	if not fila:
+		return {"ok": False, "mensaje": "La respuesta enlazada ya no existe en la conversación."}
+	spec = _json_seguro(fila.spec_json, None)
+	if not isinstance(spec, dict) or not spec:
+		return {
+			"ok": False,
+			"mensaje": (
+				"Esta respuesta no tuvo una consulta que replicar "
+				"(aviso, respuesta directa o mensaje sensible)."
+			),
+		}
+	if spec.get("respuesta_directa") or spec.get("out_of_scope"):
+		return {
+			"ok": False,
+			"mensaje": "La respuesta se armó sin consulta a la base; no hay nada que re-ejecutar.",
+		}
+	try:
+		resultado = ejecutar(spec, user=conv.usuario, alcance=fila.alcance_id or None)
+	except (SpecInvalida, frappe.PermissionError) as e:
+		return {"ok": False, "mensaje": str(e)}
+	porcentajes = _porcentajes(spec, resultado) if _es_spec_efectividad(spec) else None
+	mostrar = _tabla_para_chat(spec, resultado, porcentajes) or {}
+	columnas = mostrar.get("columnas")
+	filas = mostrar.get("filas")
+	if not columnas:
+		columnas = [_titulo_columna(c) for c in (resultado.get("columnas") or [])]
+		filas = _formatear_dinero(spec, resultado, resultado.get("filas") or [])
+	filas = json.loads(json.dumps(filas or [], ensure_ascii=False, default=str))
+	# La respuesta que se mostró en el chat (snapshot) sirve para comparar: la
+	# consulta devuelve las filas completas, no el top ni los filtros que aplicó
+	# el código al presentar (por eso se muestran las dos).
+	original = _json_seguro(fila.datos_json, None)
+	if not (isinstance(original, dict) and original.get("columnas")):
+		original = None
+	return {
+		"ok": True,
+		"pregunta": cal.pregunta or "",
+		"universo": cal.universo or fila.universo or "",
+		"periodo": _texto_periodo(cal.pregunta or "", spec) or "",
+		"respuesta": (fila.contenido or "")[:4000],
+		"original": original,
+		"columnas": columnas or [],
+		"filas": filas[:50],
+		"total_filas": len(filas),
+	}
+
+
 @frappe.whitelist()
 def obtener_conversacion(nombre):
 	doc = frappe.get_doc("IA Conversacion", nombre)
@@ -8923,6 +10009,22 @@ def obtener_conversacion(nombre):
 		frappe.throw("Esta conversación fue eliminada.", frappe.PermissionError)
 	datos = doc.as_dict()
 	datos["universo_nombre"] = _nombre_aseguradora(doc.universo) if doc.universo else ""
+	# La calificación es la del dueño de la conversación: al reabrir el chat se
+	# ve el estado de cada respuesta (y un administrador ve la del usuario).
+	calificaciones = {
+		c.get("mensaje_id"): c
+		for c in frappe.get_all(
+			"IA Calificacion",
+			filters={"conversacion": doc.name, "usuario": doc.usuario},
+			fields=["mensaje_id", "calificacion", "comentario", "fecha_hora"],
+			order_by="modified asc",
+		)
+	}
+	for mensaje in datos.get("mensajes") or []:
+		cal = calificaciones.get(mensaje.get("name"))
+		if cal:
+			mensaje["calificacion"] = cal.get("calificacion") or ""
+			mensaje["comentario"] = cal.get("comentario") or ""
 	return datos
 
 

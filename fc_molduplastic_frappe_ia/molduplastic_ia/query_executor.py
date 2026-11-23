@@ -88,7 +88,8 @@ def _base_de_agg(agg, spec=None):
 
 	# La base es el campo cuyo BETWEEN define el período. Una rezagada trae
 	# fecha_hora_recoleccion between (su período) y fecha_hora_carga "<" (el corte);
-	# la unión de recolectadas trae los dos between y va por ingreso.
+	# la unión de recolectadas trae los dos between (A1 exige carga y recolección
+	# en el mismo período, 2026-11-21) y va por ingreso.
 	if es_between(filtros.get("fecha_hora_recoleccion")) and not es_between(
 		filtros.get("fecha_hora_carga")
 	):

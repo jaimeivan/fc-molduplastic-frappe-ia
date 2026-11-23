@@ -348,7 +348,8 @@ class TestPromptExplain(FrappeTestCase):
 		datos = self._datos_enviados(spec, resultado, pregunta="efectividad por tipo CDR")
 		self.assertEqual(len(datos["porcentajes"]), 1)
 		self.assertEqual(datos["porcentajes"][0]["total"], 100)
-		self.assertEqual(datos["porcentajes"][0]["pct"], 50.0)
+		# Recolectadas = A1 + A2 (2 + 3); la rezagada no suma.
+		self.assertEqual(datos["porcentajes"][0]["pct"], 5.0)
 
 	def test_tipo_carga_viaja_con_nombre_no_con_id(self):
 		spec = {
@@ -445,7 +446,8 @@ class TestPromptExplain(FrappeTestCase):
 
 	def test_prompt_pide_la_columna_objetivo(self):
 		self.assertIn('"Objetivo"', F.SYSTEM_EXPLAIN)
-		self.assertIn("CINCO columnas", F.SYSTEM_EXPLAIN)
+		self.assertIn("la app la pinta", F.SYSTEM_EXPLAIN)
+		self.assertIn('"Intervalo 95%"', F.SYSTEM_EXPLAIN)
 
 	def test_recorta_despues_de_ordenar(self):
 		# El LIMIT viejo cortaba en MySQL antes de ordenar: el mejor grupo podía
@@ -691,8 +693,25 @@ class TestPorcentajes(FrappeTestCase):
 		resultado = {"columnas": ["marca", "count"], "filas": [["Nissan", 17]]}
 		self.assertEqual(F._porcentajes({}, resultado), [])
 
-	def test_suma_las_tres_recolectadas(self):
-		"""Recolectadas = estrictas + inconsistentes recolectadas + rezagadas."""
+	def test_intervalo_de_wilson(self):
+		resultado = {
+			"columnas": ["taller_asignado", "total", "recolectadas"],
+			"filas": [["A", 100, 85]],
+		}
+		salida = F._porcentajes(self._spec(), resultado)[0]
+		self.assertEqual(salida["intervalo"], "76.7–90.7")
+		self.assertEqual(salida["wilson_bajo"], 76.7)
+		self.assertEqual(salida["wilson_alto"], 90.7)
+		self.assertEqual(salida["margen_pp"], 7.0)
+
+	def test_intervalo_sin_piezas_es_vacio(self):
+		resultado = {"columnas": ["taller_asignado", "total", "recolectadas"], "filas": [["X", 0, 0]]}
+		salida = F._porcentajes(self._spec(), resultado)[0]
+		self.assertEqual(salida["intervalo"], "—")
+		self.assertEqual(salida["margen_pp"], 0.0)
+
+	def test_suma_solo_en_periodo_e_inconsistentes(self):
+		"""Recolectadas = en periodo + inconsistentes; las rezagadas no suman."""
 		spec = {
 			"group_by": ["tipo_carga"],
 			"aggregations": [
@@ -713,14 +732,15 @@ class TestPorcentajes(FrappeTestCase):
 			"filas": [["10", 100, 2, 3, 45]],
 		}
 		salida = F._porcentajes(spec, resultado)[0]
-		self.assertEqual(salida["recuperadas"], 50)
+		self.assertEqual(salida["recuperadas"], 5)
 		self.assertEqual(salida["recolectadas_ingreso"], 2)
 		self.assertEqual(salida["recolectadas_inconsistentes"], 3)
+		# La cifra cruda de rezagadas sigue en la fila, pero no en el numerador.
 		self.assertEqual(salida["recolectadas_periodo"], 45)
-		self.assertEqual(salida["pct"], 50.0)
+		self.assertEqual(salida["pct"], 5.0)
 		self.assertNotIn("recolectadas", salida)
 
-	def test_puede_pasar_de_cien_porciento_por_las_rezagadas(self):
+	def test_las_rezagadas_no_suman_al_porcentaje(self):
 		spec = {
 			"group_by": ["tipo_carga"],
 			"aggregations": [
@@ -740,20 +760,23 @@ class TestPorcentajes(FrappeTestCase):
 			],
 			"filas": [["10", 40, 0, 32, 11]],
 		}
-		self.assertEqual(F._porcentajes(spec, resultado)[0]["pct"], 107.5)
+		salida = F._porcentajes(spec, resultado)[0]
+		self.assertEqual(salida["recuperadas"], 32)
+		self.assertEqual(salida["pct"], 80.0)
 
-	def test_prompt_lleva_la_formula_de_las_tres_categorias(self):
+	def test_prompt_define_el_total_sin_rezagadas(self):
 		self.assertIn('"alias": "rezagadas_recolectadas"', F.SYSTEM_SPEC)
-		self.assertIn("inconsistentes recolectadas + rezagadas", F.SYSTEM_SPEC)
-		self.assertIn("Puede pasar de 100%", F.SYSTEM_SPEC)
+		self.assertIn('Total "Recolectadas" = A1 + A2', F.SYSTEM_SPEC)
+		self.assertIn("Las rezagadas NO", F.SYSTEM_SPEC)
+		self.assertNotIn("Puede pasar de 100%", F.SYSTEM_SPEC)
 
 	def test_prompt_pide_usar_el_porcentaje_calculado(self):
 		self.assertIn('"porcentajes"', F.SYSTEM_EXPLAIN)
 
 	def test_prompt_usa_recolectadas_en_la_tabla(self):
-		self.assertIn('"recuperadas" es la suma de las tres categorías', F.SYSTEM_EXPLAIN)
+		self.assertIn('"recuperadas" es la suma de dos categorías', F.SYSTEM_EXPLAIN)
 		self.assertIn('La columna se llama "Recolectadas"', F.SYSTEM_EXPLAIN)
-		self.assertIn('"Ingresadas", "Recolectadas",', F.SYSTEM_EXPLAIN)
+		self.assertIn('"Intervalo 95%"', F.SYSTEM_EXPLAIN)
 		self.assertNotIn('"Recuperadas"', F.SYSTEM_EXPLAIN)
 
 	def test_las_preguntas_que_arma_el_codigo_no_usan_el_modelo_pro(self):
@@ -865,7 +888,20 @@ class TestPromptComparacion(FrappeTestCase):
 			],
 			"filas": [[40, 2, 3, 45]],
 		}
-		self.assertEqual(F.totales_recuperadas(resultado["filas"], resultado), [50])
+		# Las rezagadas recolectadas (45) no suman: 2 + 3.
+		self.assertEqual(F.totales_recuperadas(resultado["filas"], resultado), [5])
+
+	def test_totales_recuperadas_sin_rezagadas(self):
+		resultado = {
+			"columnas": [
+				"total",
+				"recolectadas",
+				"recolectadas_inconsistentes",
+				"recolectadas_periodo",
+			],
+			"filas": [[5434, 1614, 0, 2640]],
+		}
+		self.assertEqual(F.totales_recuperadas(resultado["filas"], resultado), [1614])
 
 	def test_prompt_define_no_recolectadas_total(self):
 		self.assertIn('Definición de NO RECOLECTADAS (el total', F.SYSTEM_SPEC)
@@ -885,6 +921,14 @@ class TestPromptComparacion(FrappeTestCase):
 		self.assertIn('"Submarca" (o "modelo del vehículo") SÍ es el campo', F.SYSTEM_SPEC)
 		self.assertIn('group_by ["tipo"]', F.SYSTEM_SPEC)
 
+	def test_a1_va_por_periodo_y_no_por_mes(self):
+		"""A1 (dueño, 2026-11-21): carga y recolección dentro del mismo período."""
+		self.assertIn("DENTRO DEL MISMO PERÍODO", F.SYSTEM_SPEC)
+		self.assertNotIn("fecha_hora_recoleccion en el MISMO mes", F.SYSTEM_SPEC)
+		self.assertIn(
+			'"fecha_hora_recoleccion": [["between", "DESDE", "HASTA"],', F.SYSTEM_SPEC
+		)
+
 	def test_prompt_pide_el_minimo_en_cualquier_efectividad(self):
 		self.assertIn("Aplica a CUALQUIER pregunta de efectividad con dimensión", F.SYSTEM_SPEC)
 		self.assertIn('"min_ingresadas": 500', F.SYSTEM_SPEC)
@@ -895,7 +939,7 @@ class TestPromptComparacion(FrappeTestCase):
 
 	def test_explain_pide_tabla_cuando_el_top_trae_n(self):
 		self.assertIn('top N ("las 5 partes que menos se recolectan"', F.SYSTEM_EXPLAIN)
-		self.assertIn("no es una sola cifra: contesta con la tabla de cinco columnas", F.SYSTEM_EXPLAIN)
+		self.assertIn("NO escribas la tabla", F.SYSTEM_EXPLAIN)
 
 	def test_explain_pide_la_frase_de_comparacion(self):
 		self.assertIn("compara dos grupos por efectividad", F.SYSTEM_EXPLAIN)
@@ -952,7 +996,8 @@ class TestResumenDetalle(FrappeTestCase):
 			[self._resultado()["filas"][0]], self._resultado()
 		)
 		self.assertNotIn("recolectadas_en_periodo", columnas)
-		self.assertEqual(filas[0][columnas.index("recolectadas")], 4527)
+		# A1 + A2, sin las rezagadas (4,252).
+		self.assertEqual(filas[0][columnas.index("recolectadas")], 275)
 
 	def test_detalle_conserva_las_recolectadas_en_periodo(self):
 		filas, columnas = F._colapsar_recolectadas(
@@ -960,8 +1005,8 @@ class TestResumenDetalle(FrappeTestCase):
 		)
 		self.assertIn("recolectadas_en_periodo", columnas)
 		self.assertEqual(filas[0][columnas.index("recolectadas_en_periodo")], 47)
-		# La suma de las tres sigue siendo la fila "Recolectadas".
-		self.assertEqual(filas[0][columnas.index("recolectadas")], 4527)
+		# La fila "Recolectadas" suma A1 + A2; las rezagadas no.
+		self.assertEqual(filas[0][columnas.index("recolectadas")], 275)
 		self.assertEqual(
 			columnas[columnas.index("recolectadas") + 1], "recolectadas_en_periodo"
 		)
@@ -1040,4 +1085,5 @@ class TestRecolectadasPorDimension(FrappeTestCase):
 			self, spec, resultado, pregunta="piezas recolectadas por taller"
 		)
 		valores = {str(f[0]): f[1] for f in datos["filas"]}
-		self.assertEqual(valores, {"A": 5, "C": 5})
+		# C solo tiene rezagadas (3): no cuenta como recolectada (0 + 2).
+		self.assertEqual(valores, {"A": 5, "C": 2})

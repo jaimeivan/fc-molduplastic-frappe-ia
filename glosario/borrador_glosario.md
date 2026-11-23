@@ -23,12 +23,12 @@ definición vigente del asistente. Lo que se propone son las **causas** y las
 
 **Causas típicas — propuesta para validar:**
 
-> La efectividad baja cuando ingresan piezas que no se recolectan en el mismo mes:
-> rezago de recolección de los CDR, piezas pendientes que siguen sin estatus y
-> piezas no localizadas. El indicador puede pasar de 100 % porque cuenta rezagadas
-> de meses anteriores sobre las ingresadas del período; por eso una caída contra el
-> mes anterior no siempre significa que se recolecte menos, sino que cambió la
-> mezcla de rezago.
+> La efectividad baja cuando ingresan piezas que no se recolectan dentro del
+> período: rezago de recolección de los CDR, piezas pendientes que siguen sin
+> estatus y piezas no localizadas. El indicador ya no cuenta las recolecciones de
+> piezas que ingresaron antes del período (rezagadas), así que no pasa de 100 %;
+> una caída contra el período anterior significa que se recolectó menos de lo que
+> ingresó en esa ventana.
 
 **Acción recomendada — propuesta para validar:**
 

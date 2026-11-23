@@ -386,12 +386,13 @@ class TestRegionPais(FrappeTestCase):
 
 
 class TestRecolectadasEstrictas(FrappeTestCase):
-	"""Definición estricta de "recolectada" contra SQL directo (Afirme = aseguradora 1).
+	"""El operador mes_igual de la gramática contra SQL directo (Afirme = aseguradora 1).
 
-	Es la que manda el prompt: id_estatus = 100 (Recolectado) + fecha de
-	recolección en el mismo mes del ingreso y posterior o igual a él. El caso
-	general es que dé 0 o muy por debajo de "tiene fecha de recolección": buena
-	parte de la información tiene la fecha anterior al ingreso o de otro mes.
+	La definición vigente de "recolectadas en periodo" ya no usa mes_igual: pide
+	la recolección dentro del período consultado (ver TestRecolectadasEnPeriodo).
+	Este spec fija el operador ["mes_igual", {"campo": ...}] del ejecutor:
+	id_estatus = 100 + recolección en el mismo mes de la carga y posterior o igual
+	a ella.
 	"""
 
 	OCT = ["2026-10-01 00:00:00", "2026-10-16 23:59:59"]
@@ -577,7 +578,12 @@ class TestRezagadas(FrappeTestCase):
 
 
 class TestEfectividadConRezagadas(FrappeTestCase):
-	"""La efectividad suma las tres categorías y las rezagadas van en otra consulta."""
+	"""El ejecutor une las dos bases; el porcentaje suma solo A1 + A2.
+
+	Las rezagadas recolectadas se siguen midiendo (van en la segunda consulta),
+	pero desde el 2026-11-21 no suman al total de "Recolectadas" ni al numerador
+	de la efectividad.
+	"""
 
 	SEP = ["2026-09-01 00:00:00", "2026-09-30 23:59:59"]
 
@@ -596,7 +602,7 @@ class TestEfectividadConRezagadas(FrappeTestCase):
 					"filtros": {
 						"id_estatus": ["=", 100],
 						"fecha_hora_recoleccion": [
-							["mes_igual", {"campo": "fecha_hora_carga"}],
+							["between", desde, hasta],
 							[">=", {"campo": "fecha_hora_carga"}],
 						],
 					},
@@ -635,13 +641,12 @@ class TestEfectividadConRezagadas(FrappeTestCase):
 		esperado = frappe.db.sql(
 			"SELECT COUNT(*), "
 			"COUNT(CASE WHEN id_estatus = 100 AND fecha_hora_recoleccion >= fecha_hora_carga "
-			"AND DATE_FORMAT(fecha_hora_recoleccion, '%%Y-%%m') = "
-			"DATE_FORMAT(fecha_hora_carga, '%%Y-%%m') THEN 1 END), "
+			"AND fecha_hora_recoleccion BETWEEN %s AND %s THEN 1 END), "
 			"COUNT(CASE WHEN fecha_hora_recoleccion < fecha_hora_carga "
 			"AND id_estatus = 100 THEN 1 END) "
 			"FROM tabPieza WHERE aseguradora = '1' AND recolectable = 1 AND rutas_validas = '1' "
 			"AND fecha_hora_carga BETWEEN %s AND %s",
-			tuple(self.SEP),
+			tuple(self.SEP) + tuple(self.SEP),
 		)[0]
 		rez_esperado = frappe.db.sql(
 			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora = '1' "
@@ -652,6 +657,84 @@ class TestEfectividadConRezagadas(FrappeTestCase):
 		self.assertEqual((total, rec, inc), tuple(esperado))
 		self.assertEqual(rez, rez_esperado)
 		self.assertGreater(total, 0)
+
+	def test_el_porcentaje_no_suma_las_rezagadas(self):
+		"""Recolectadas = A1 + A2; la rezagada (rec 2,640 en sep) queda fuera."""
+		from fc_molduplastic_frappe_ia.molduplastic_ia.llm_factory import _porcentajes
+
+		desde, hasta = self.SEP
+		res = ejecutar(self._spec(), "Administrator", alcance="1")
+		fila = _porcentajes(self._spec(), res)[0]
+		total, a1, a2 = frappe.db.sql(
+			"SELECT COUNT(*), "
+			"COUNT(CASE WHEN id_estatus = 100 AND fecha_hora_recoleccion >= fecha_hora_carga "
+			"AND fecha_hora_recoleccion BETWEEN %s AND %s THEN 1 END), "
+			"COUNT(CASE WHEN fecha_hora_recoleccion < fecha_hora_carga "
+			"AND id_estatus = 100 THEN 1 END) "
+			"FROM tabPieza WHERE aseguradora = '1' AND recolectable = 1 AND rutas_validas = '1' "
+			"AND fecha_hora_carga BETWEEN %s AND %s",
+			(desde, hasta, desde, hasta),
+		)[0]
+		self.assertEqual(fila["total"], total)
+		self.assertEqual(fila["recuperadas"], a1 + a2)
+		self.assertEqual(
+			fila["pct"], round((a1 + a2) / total * 100, 1) if total else 0.0
+		)
+		self.assertGreater(fila["rezagadas_recolectadas"], 0)
+
+
+class TestRecolectadasEnPeriodo(FrappeTestCase):
+	"""A1 = la recolección cae dentro del mismo período consultado (2026-11-21).
+
+	Antes se pedía "recolección en el mismo mes de la carga"; en un rango de
+	varios meses, una pieza cargada en enero y recolectada en marzo del mismo
+	rango no contaba como recolectada en periodo. Ahora la fecha de recolección
+	tiene que estar dentro del rango consultado, igual que la de carga.
+	"""
+
+	PERIODO = ["2026-01-01 00:00:00", "2026-09-30 23:59:59"]
+
+	def _spec(self):
+		desde, hasta = self.PERIODO
+		return {
+			"doctype": "Pieza",
+			"fields": [],
+			"filters": {},
+			"aggregations": api._aggs_recolectadas(desde, hasta),
+			"group_by": [],
+			"limit": 1,
+		}
+
+	def test_a1_coincide_con_sql_directo(self):
+		desde, hasta = self.PERIODO
+		res = ejecutar(self._spec(), "Administrator", alcance="1")
+		col = {c: i for i, c in enumerate(res["columnas"])}
+		directo = frappe.db.sql(
+			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora = '1' "
+			"AND recolectable = 1 AND rutas_validas = '1' "
+			"AND fecha_hora_carga BETWEEN %s AND %s AND id_estatus = 100 "
+			"AND fecha_hora_recoleccion BETWEEN %s AND %s "
+			"AND fecha_hora_recoleccion >= fecha_hora_carga",
+			(desde, hasta, desde, hasta),
+		)[0][0]
+		self.assertGreater(directo, 0)
+		self.assertEqual(res["filas"][0][col["recolectadas"]], directo)
+
+	def test_es_mayor_que_la_regla_del_mismo_mes(self):
+		"""La regla vieja (mismo mes) es un subconjunto estricto: se perdía el cruce."""
+		desde, hasta = self.PERIODO
+		res = ejecutar(self._spec(), "Administrator", alcance="1")
+		col = {c: i for i, c in enumerate(res["columnas"])}
+		mismo_mes = frappe.db.sql(
+			"SELECT COUNT(*) FROM tabPieza WHERE aseguradora = '1' "
+			"AND recolectable = 1 AND rutas_validas = '1' "
+			"AND fecha_hora_carga BETWEEN %s AND %s AND id_estatus = 100 "
+			"AND fecha_hora_recoleccion >= fecha_hora_carga "
+			"AND DATE_FORMAT(fecha_hora_recoleccion, '%%Y-%%m') = "
+			"DATE_FORMAT(fecha_hora_carga, '%%Y-%%m')",
+			(desde, hasta),
+		)[0][0]
+		self.assertGreater(res["filas"][0][col["recolectadas"]], mismo_mes)
 
 
 class TestNoRecuperadas(FrappeTestCase):

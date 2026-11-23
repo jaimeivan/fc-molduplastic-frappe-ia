@@ -44,6 +44,17 @@ class MolduplasticIASettings(Document):
 		dias = int(self.dias_maximos_analisis or 0)
 		if not 1 <= dias <= 366:
 			frappe.throw(_("Los días máximos para el análisis deben estar entre 1 y 366."))
+		modos = {
+			"Playbook",
+			"Hallazgos + catálogo",
+			"Modelo libre",
+		}
+		if self.modo_sugerencias and self.modo_sugerencias not in modos:
+			frappe.throw(
+				_("Modo de sugerencias inválido: {0}. Válidos: {1}").format(
+					self.modo_sugerencias, ", ".join(sorted(modos))
+				)
+			)
 		presupuesto = int(self.presupuesto_analisis_seg or 0)
 		if not 5 <= presupuesto <= PRESUPUESTO_MAXIMO_SEG:
 			frappe.throw(

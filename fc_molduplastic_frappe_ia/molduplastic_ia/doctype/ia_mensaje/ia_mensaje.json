@@ -1,67 +1,125 @@
 {
-  "actions": [],
-  "creation": "2026-10-06 00:00:00.000000",
-  "doctype": "DocType",
-  "engine": "InnoDB",
-  "field_order": [
-    "rol",
-    "fecha_hora",
-    "contenido",
-    "universo",
-    "spec_json",
-    "datos_json",
-    "cobertura_json"
-  ],
-  "fields": [
-    {
-      "fieldname": "rol",
-      "fieldtype": "Select",
-      "in_list_view": 1,
-      "label": "Rol",
-      "options": "usuario\nasistente\nsistema",
-      "reqd": 1
-    },
-    {
-      "fieldname": "fecha_hora",
-      "fieldtype": "Datetime",
-      "in_list_view": 1,
-      "label": "Fecha y hora"
-    },
-    {
-      "fieldname": "contenido",
-      "fieldtype": "Long Text",
-      "in_list_view": 1,
-      "label": "Contenido"
-    },
-    {
-      "fieldname": "universo",
-      "fieldtype": "Data",
-      "label": "Universo (aseguradora)",
-      "read_only": 1
-    },
-    {
-      "fieldname": "spec_json",
-      "fieldtype": "Code",
-      "label": "Query Spec (JSON)"
-    },
-    {
-      "fieldname": "datos_json",
-      "fieldtype": "Code",
-      "label": "Datos de respuesta (JSON)"
-    },
-    {
-      "fieldname": "cobertura_json",
-      "fieldtype": "Code",
-      "label": "Cobertura / universo (JSON)"
-    }
-  ],
-  "index_web_pages_for_search": 0,
-  "istable": 1,
-  "links": [],
-  "modified": "2026-10-06 00:00:00.000000",
-  "modified_by": "Administrator",
-  "module": "Molduplastic IA",
-  "name": "IA Mensaje",
-  "owner": "Administrator",
-  "permissions": []
+ "actions": [],
+ "creation": "2026-10-06 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "rol",
+  "fecha_hora",
+  "contenido",
+  "universo",
+  "spec_json",
+  "datos_json",
+  "cobertura_json",
+  "alcance_id",
+  "origen_pregunta",
+  "sugerencia_modo",
+  "sugerencia_indice",
+  "sugerencia_id",
+  "sugerencias_modo",
+  "sugerencias_json",
+  "sugerencias_id",
+  "consulta_id"
+ ],
+ "fields": [
+  {
+   "fieldname": "rol",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Rol",
+   "options": "usuario\nasistente\nsistema",
+   "reqd": 1
+  },
+  {
+   "fieldname": "fecha_hora",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Fecha y hora"
+  },
+  {
+   "fieldname": "contenido",
+   "fieldtype": "Long Text",
+   "in_list_view": 1,
+   "label": "Contenido"
+  },
+  {
+   "fieldname": "universo",
+   "fieldtype": "Data",
+   "label": "Universo (aseguradora)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "spec_json",
+   "fieldtype": "Code",
+   "label": "Query Spec (JSON)"
+  },
+  {
+   "fieldname": "datos_json",
+   "fieldtype": "Code",
+   "label": "Datos de respuesta (JSON)"
+  },
+  {
+   "fieldname": "cobertura_json",
+   "fieldtype": "Code",
+   "label": "Cobertura / universo (JSON)"
+  },
+  {
+   "description": "Alcance usado en el turno para poder replicar la respuesta: vacío = aseguradoras del usuario; TODAS o el docname de una aseguradora si fue un administrador.",
+   "fieldname": "alcance_id",
+   "fieldtype": "Data",
+   "label": "Alcance (para replicar)",
+   "read_only": 1
+  },
+  {
+   "default": "Escrita",
+   "fieldname": "origen_pregunta",
+   "fieldtype": "Select",
+   "label": "Origen de la pregunta",
+   "options": "Escrita\nSugerencia"
+  },
+  {
+   "fieldname": "sugerencia_modo",
+   "fieldtype": "Data",
+   "label": "Modo de la sugerencia"
+  },
+  {
+   "fieldname": "sugerencia_indice",
+   "fieldtype": "Int",
+   "label": "Índice de la sugerencia"
+  },
+  {
+   "fieldname": "sugerencia_id",
+   "fieldtype": "Data",
+   "label": "Id del set de sugerencias"
+  },
+  {
+   "fieldname": "sugerencias_modo",
+   "fieldtype": "Data",
+   "label": "Modo de las sugerencias ofrecidas"
+  },
+  {
+   "fieldname": "sugerencias_json",
+   "fieldtype": "Long Text",
+   "label": "Sugerencias ofrecidas (JSON)"
+  },
+  {
+   "fieldname": "sugerencias_id",
+   "fieldtype": "Data",
+   "label": "Id del set ofrecido"
+  },
+  {
+   "fieldname": "consulta_id",
+   "fieldtype": "Data",
+   "label": "Id de la consulta (IA API Log)"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-11-23 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Molduplastic IA",
+ "name": "IA Mensaje",
+ "owner": "Administrator",
+ "permissions": []
 }

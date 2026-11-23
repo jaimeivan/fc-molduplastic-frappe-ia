@@ -22,6 +22,25 @@ SPEC_OK = {
 	"out_of_scope": False,
 }
 
+SPEC_EFECTIVIDAD = {
+	"doctype": "Pieza",
+	"fields": [],
+	"filters": {
+		"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]
+	},
+	"aggregations": [
+		{"func": "count", "field": "*", "alias": "total"},
+		{"func": "count", "field": "*", "alias": "recolectadas"},
+		{"func": "count", "field": "*", "alias": "recolectadas_inconsistentes"},
+		{"func": "count", "field": "*", "alias": "recolectadas_periodo"},
+	],
+	"group_by": ["taller_asignado"],
+	"order_by": [],
+	"limit": 5,
+	"render_chart": None,
+	"out_of_scope": False,
+}
+
 INFO = {
 	"proveedor": "DeepSeek",
 	"modelo": "deepseek-chat",
@@ -40,6 +59,40 @@ class TestAsk(FrappeTestCase):
 	def setUp(self):
 		frappe.set_user(USUARIO_GNP)
 		self.addCleanup(frappe.set_user, "Administrator")
+
+	def test_efectividad_no_muestra_la_tabla_del_modelo(self):
+		"""La tabla la pinta el servidor: la del modelo (con tendencia) se quita."""
+		texto = (
+			"**Efectividad por Taller**\n\n"
+			"| Taller | Ingresadas | Interanual |\n"
+			"|---|---|---|\n"
+			"| A | 100 | +5.0% |\n\n"
+			"Un comentario."
+		)
+		with patch.object(api, "generate_spec", return_value=(SPEC_EFECTIVIDAD, INFO)), \
+			patch.object(api, "explain", return_value=(texto, INFO)), \
+			patch.object(api, "_analisis_completo", return_value=None):
+			res = api.ask("efectividad por taller")
+		self.assertNotIn("|", res["respuesta"])
+		self.assertIn("Un comentario.", res["respuesta"])
+		self.assertIn("Intervalo 95%", res["columnas"])
+		self.assertNotIn("Interanual", res["columnas"])
+
+	def test_sin_tablas_markdown(self):
+		texto = "Titular\n\n| Mes | Piezas |\n|---|---|\n| ene | 10 |\n\nCierre"
+		self.assertEqual(api._sin_tablas_markdown(texto), "Titular\n\nCierre")
+
+	def test_veredicto_antes_del_analisis(self):
+		texto = "Titular\n\n**Lo que veo**\n- algo\n\n**Ojo con esto**\n- otra"
+		salida = api._con_linea_antes_del_analisis(texto, "Veredicto.")
+		self.assertLess(salida.index("Veredicto."), salida.index("Lo que veo"))
+		self.assertIn("**Lo que veo**", salida)
+
+	def test_sin_analisis_la_linea_va_al_final(self):
+		self.assertEqual(
+			api._con_linea_antes_del_analisis("Titular", "Veredicto."),
+			"Titular\n\nVeredicto.",
+		)
 
 	@patch.object(api, "explain", return_value=("Hay 5 piezas.", INFO))
 	@patch.object(api, "generate_spec", return_value=(SPEC_OK, INFO))
@@ -506,7 +559,7 @@ class TestCompletarEfectividad(FrappeTestCase):
 		rezagadas = spec["aggregations"][3]["filtros"]
 		desde = estrictas["fecha_hora_carga"][1]
 		hasta = estrictas["fecha_hora_carga"][2]
-		self.assertIn(["mes_igual", {"campo": "fecha_hora_carga"}], estrictas["fecha_hora_recoleccion"])
+		self.assertIn(["between", desde, hasta], estrictas["fecha_hora_recoleccion"])
 		self.assertIn([">=", {"campo": "fecha_hora_carga"}], estrictas["fecha_hora_recoleccion"])
 		self.assertEqual(inconsistentes["fecha_hora_recoleccion"], ["<", {"campo": "fecha_hora_carga"}])
 		self.assertEqual(rezagadas["fecha_hora_recoleccion"], ["between", desde, hasta])
@@ -646,7 +699,7 @@ class TestCompletarEfectividad(FrappeTestCase):
 		for pregunta, esperado in casos.items():
 			self.assertEqual(api._minimo_de_la_pregunta(pregunta), esperado, pregunta)
 
-	def test_efectividad_sin_top_no_agrega_umbral_ni_orden(self):
+	def test_efectividad_normal_aplica_el_minimo_configurado(self):
 		spec = {
 			"doctype": "Pieza",
 			"fields": [],
@@ -657,9 +710,262 @@ class TestCompletarEfectividad(FrappeTestCase):
 			"group_by": ["taller_asignado"],
 		}
 		out = api._completar_efectividad(spec, "¿cuál es el porcentaje de efectividad por taller?")
-		self.assertNotIn("min_ingresadas", out)
+		# Sin número en la pregunta manda el piso configurado
+		# (`min_piezas_porcentaje`, 50 por defecto).
+		self.assertEqual(out["min_ingresadas"], api._minimo_piezas_porcentaje())
 		self.assertNotIn("order_by", out)
 		self.assertNotIn("limit", out)
+
+	def _spec_efectividad(self, group_by=("taller_asignado",)):
+		return {
+			"doctype": "Pieza",
+			"fields": [],
+			"filters": {
+				"fecha_hora_carga": ["between", "2026-01-01 00:00:00", "2026-10-23 23:59:59"]
+			},
+			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
+			"group_by": list(group_by),
+		}
+
+	def test_el_minimo_configurado_es_un_piso(self):
+		"""El valor de Settings manda; la pregunta solo puede pedir más."""
+		with patch.object(api, "_minimo_piezas_porcentaje", return_value=250):
+			out = api._completar_efectividad(
+				self._spec_efectividad(), "efectividad por taller"
+			)
+			self.assertEqual(out["min_ingresadas"], 250)
+			out = api._completar_efectividad(
+				self._spec_efectividad(), "efectividad por taller con al menos 500 piezas"
+			)
+			self.assertEqual(out["min_ingresadas"], 500)
+			out = api._completar_efectividad(
+				self._spec_efectividad(), "efectividad por taller con al menos 10 piezas"
+			)
+			self.assertEqual(out["min_ingresadas"], 250)
+			out = api._completar_efectividad(
+				self._spec_efectividad(group_by=()), "efectividad en el mes"
+			)
+			self.assertNotIn("min_ingresadas", out)
+
+	def test_el_minimo_se_lee_de_settings(self):
+		configurado = frappe.get_cached_doc("Molduplastic IA Settings").min_piezas_porcentaje
+		self.assertEqual(api._minimo_piezas_porcentaje(), int(configurado or 50))
+
+	def test_un_valor_invalido_cae_a_50(self):
+		class Settings:
+			min_piezas_porcentaje = None
+
+		with patch.object(api.frappe, "get_cached_doc", return_value=Settings()):
+			self.assertEqual(api._minimo_piezas_porcentaje(), 50)
+
+
+class TestVeredictoEfectividad(FrappeTestCase):
+	"""Intervalo de Wilson y cambio contra el período anterior (dueño, 2026-11-21)."""
+
+	def _spec(self):
+		return {
+			"doctype": "Pieza",
+			"fields": [],
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+			"aggregations": [
+				{"func": "count", "field": "*", "alias": "total"},
+				{"func": "count", "field": "*", "alias": "recolectadas"},
+				{"func": "count", "field": "*", "alias": "recolectadas_inconsistentes"},
+			],
+			"group_by": [],
+			"order_by": [],
+			"limit": 1,
+		}
+
+	def _resultado(self, total, rec):
+		return {
+			"columnas": ["total", "recolectadas", "recolectadas_inconsistentes"],
+			"filas": [[total, rec, 0]],
+		}
+
+	def test_prueba_de_dos_proporciones(self):
+		_, pval = api._prueba_dos_proporciones(860, 1000, 850, 1000)
+		self.assertGreater(pval, 0.05)  # 1 pp con 1,000 piezas no es significativo
+		_, pval = api._prueba_dos_proporciones(900, 1000, 800, 1000)
+		self.assertLess(pval, 0.05)
+
+	def test_veredicto_contra_el_periodo_anterior(self):
+		with patch.object(api, "ejecutar", return_value=self._resultado(1000, 850)):
+			v = api._veredicto_efectividad(
+				self._spec(), self._resultado(1000, 860), "Administrator", "1"
+			)
+		self.assertEqual(v["pct"], 86.0)
+		self.assertEqual(v["pct_previo"], 85.0)
+		self.assertEqual(v["pp"], 1.0)
+		self.assertFalse(v["significativo"])
+		self.assertEqual(v["intervalo"], "83.7–88.0")
+		frase = api._frase_veredicto_efectividad(v)
+		self.assertIn("Contra Agosto de 2026", frase)
+		self.assertIn("no es significativo", frase)
+
+	def test_veredicto_significativo(self):
+		with patch.object(api, "ejecutar", return_value=self._resultado(1000, 800)):
+			v = api._veredicto_efectividad(
+				self._spec(), self._resultado(1000, 900), "Administrator", "1"
+			)
+		self.assertTrue(v["significativo"])
+		self.assertIn("el cambio es significativo", api._frase_veredicto_efectividad(v))
+
+	def test_sin_periodo_anterior_no_hay_veredicto(self):
+		with patch.object(api, "ejecutar", return_value=self._resultado(0, 0)):
+			self.assertIsNone(
+				api._veredicto_efectividad(
+					self._spec(), self._resultado(1000, 860), "Administrator", "1"
+				)
+			)
+
+	def test_spec_un_anio_antes_mueve_las_fechas(self):
+		spec = self._spec()
+		spec["aggregations"][0]["filtros"] = {
+			"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]
+		}
+		nuevo = api._spec_un_anio_antes(spec)
+		self.assertEqual(
+			nuevo["filters"]["fecha_hora_carga"][1], "2025-09-01 00:00:00"
+		)
+		self.assertEqual(
+			nuevo["aggregations"][0]["filtros"]["fecha_hora_carga"][2],
+			"2025-09-30 23:59:59",
+		)
+		# El spec original no se toca.
+		self.assertEqual(
+			spec["filters"]["fecha_hora_carga"][1], "2026-09-01 00:00:00"
+		)
+
+
+class TestRecoleccionPorBloque(FrappeTestCase):
+	"""Qué mes/bimestre/trimestre/cuatrimestre tiene mayor/menor recolección.
+
+	La medida es la efectividad del bloque (A1 + A2 sobre ingresadas), igual
+	que "la región con mayor recolección".
+	"""
+
+	def _spec(self):
+		return {
+			"doctype": "Pieza",
+			"fields": [],
+			"filters": {},
+			"aggregations": [
+				{"func": "count", "field": "*", "alias": "total"},
+				{"func": "count", "field": "*", "alias": "recolectadas"},
+				{"func": "count", "field": "*", "alias": "recolectadas_inconsistentes"},
+			],
+			"group_by": ["mes"],
+			"order_by": [{"field": "mes", "dir": "asc"}],
+			"limit": 12,
+		}
+
+	def _resultado(self, total_octubre=100):
+		recolecciones = {
+			1: 10, 2: 20, 3: 30,
+			4: 40, 5: 50, 6: 60,
+			7: 70, 8: 80, 9: 90,
+			10: total_octubre // 2, 11: 95,
+		}
+		return {
+			"columnas": [
+				"mes", "total", "recolectadas", "recolectadas_inconsistentes"
+			],
+			"filas": [
+				[f"2026-{mes:02d}", 100 if mes != 10 else total_octubre, rec, 0]
+				for mes, rec in recolecciones.items()
+			],
+		}
+
+	def test_detecta_la_pregunta(self):
+		for pregunta in (
+			"¿qué mes del año tiene mayor recolección?",
+			"¿cuáles son los trimestres con menor recolección?",
+			"dime el bimestre con más recolección",
+			"¿qué cuatrimestre tuvo la recolección más alta?",
+		):
+			self.assertTrue(api._pide_recoleccion_por_bloque(pregunta), pregunta)
+		for pregunta in (
+			"¿qué trimestre tiene mayor efectividad?",
+			"crecimiento de piezas por trimestre",
+			"efectividad del primer trimestre",
+			"¿qué mes tiene más piezas?",
+		):
+			self.assertFalse(api._pide_recoleccion_por_bloque(pregunta), pregunta)
+
+	def test_granularidad(self):
+		self.assertEqual(api._granularidad_de_bloques("qué mes tuvo mayor recolección"), "mes")
+		self.assertEqual(
+			api._granularidad_de_bloques("qué bimestre tuvo mayor recolección"), "bimestre"
+		)
+		self.assertEqual(
+			api._granularidad_de_bloques("qué trimestre tuvo mayor recolección"), "trimestre"
+		)
+		self.assertEqual(
+			api._granularidad_de_bloques("qué cuatrimestre tuvo mayor recolección"),
+			"cuatrimestre",
+		)
+
+	def test_spec_del_anio_por_mes(self):
+		out = api._completar_recoleccion_por_bloque(
+			self._spec(), "¿qué trimestre de 2025 tiene mayor recolección?"
+		)
+		self.assertEqual(out["group_by"], ["mes"])
+		self.assertEqual(out["limit"], 12)
+		self.assertEqual(out["filters"]["fecha_hora_carga"][1], "2025-01-01 00:00:00")
+		self.assertEqual(out["filters"]["fecha_hora_carga"][2], "2025-12-31 23:59:59")
+		# Sin B: su base es la recolección y no entra en el numerador.
+		self.assertEqual(
+			[a["alias"] for a in out["aggregations"]],
+			["total", "recolectadas", "recolectadas_inconsistentes"],
+		)
+		self.assertNotIn("min_ingresadas", out)
+
+	def test_trimestre_mayor_y_menor(self):
+		with patch.object(api.frappe.utils, "nowdate", return_value="2026-11-21"):
+			tabla, mejor, peor, _ = api._tabla_recoleccion_por_bloque(
+				self._spec(), self._resultado(), "trimestre", "qué trimestre tuvo mayor recolección"
+			)
+		# Q1 60/300, Q2 150/300, Q3 240/300; Q4 en curso queda fuera.
+		self.assertEqual([f[0] for f in tabla], [
+			"3er trimestre de 2026", "2do trimestre de 2026", "1er trimestre de 2026"
+		])
+		self.assertEqual(mejor[0], "3er trimestre de 2026")
+		self.assertEqual(mejor[3], "80.0%")
+		self.assertEqual(peor[0], "1er trimestre de 2026")
+		self.assertEqual(peor[3], "20.0%")
+
+	def test_mes_mayor_y_menor_y_bloque_en_curso(self):
+		with patch.object(api.frappe.utils, "nowdate", return_value="2026-11-21"):
+			tabla, mejor, peor, _ = api._tabla_recoleccion_por_bloque(
+				self._spec(), self._resultado(), "mes", "qué mes tuvo menor recolección"
+			)
+		nombres = [f[0] for f in tabla]
+		self.assertEqual(len(nombres), 10)
+		self.assertNotIn("nov 2026", nombres)  # bloque en curso
+		self.assertEqual(mejor[0], "sep 2026")
+		self.assertEqual(mejor[3], "90.0%")
+		self.assertEqual(peor[0], "ene 2026")
+		self.assertEqual(peor[3], "10.0%")
+
+	def test_bimestre_mayor(self):
+		with patch.object(api.frappe.utils, "nowdate", return_value="2026-11-21"):
+			tabla, mejor, peor, _ = api._tabla_recoleccion_por_bloque(
+				self._spec(), self._resultado(), "bimestre", "qué bimestre tuvo mayor recolección"
+			)
+		self.assertEqual(len(tabla), 5)  # ene-oct; el 6to (nov-dic) está en curso
+		self.assertEqual(mejor[0], "4to bimestre de 2026")
+		self.assertEqual(mejor[3], "75.0%")
+		self.assertEqual(peor[0], "1er bimestre de 2026")
+		self.assertEqual(peor[3], "15.0%")
+
+	def test_el_piso_configurado_excluye_bloques(self):
+		with patch.object(api, "_minimo_piezas_porcentaje", return_value=150), \
+			patch.object(api.frappe.utils, "nowdate", return_value="2026-11-21"):
+			tabla, _, _, _ = api._tabla_recoleccion_por_bloque(
+				self._spec(), self._resultado(), "mes", "qué mes tuvo mayor recolección"
+			)
+		self.assertEqual(tabla, [])
 
 
 class TestCompletarListado(FrappeTestCase):
@@ -1026,9 +1332,19 @@ class TestTablaEfectividad(FrappeTestCase):
 		]
 		columnas, filas = api._tabla_efectividad(spec, porcentajes)
 		self.assertEqual(
-			columnas, ["Plaza", "Ingresadas", "Recolectadas", "Efectividad", "Objetivo"]
+			columnas,
+			[
+				"Plaza",
+				"Ingresadas",
+				"Recolectadas",
+				"Efectividad",
+				"Intervalo 95%",
+				"Objetivo",
+			],
 		)
-		self.assertEqual(filas, [["SALTILLO", 105, 75, "71.4%", "Por debajo"]])
+		self.assertEqual(
+			filas, [["SALTILLO", 105, 75, "71.4%", "—", "Por debajo"]]
+		)
 
 	def test_dos_dimensiones(self):
 		spec = {"group_by": ["region_pais", "id_plaza"]}
@@ -1036,10 +1352,33 @@ class TestTablaEfectividad(FrappeTestCase):
 		columnas, filas = api._tabla_efectividad(spec, porcentajes)
 		self.assertEqual(columnas[0], "Región / Plaza")
 		self.assertEqual(filas[0][:4], ["Norte / MTY", 24, 24, "100.0%"])
-		self.assertEqual(filas[0][4], "")
+		self.assertEqual(filas[0][4], "—")
+		self.assertEqual(filas[0][5], "")
 
 	def test_sin_porcentajes_no_hay_tabla(self):
 		self.assertIsNone(api._tabla_efectividad({"group_by": ["marca"]}, []))
+
+	def test_efectividad_filtrada_no_pinta_la_tabla_cruda(self):
+		"""Si el corte de ingresadas deja 0 filas, no se pinta el crudo."""
+		spec = {
+			"group_by": ["taller_asignado"],
+			"aggregations": [{"alias": "total"}, {"alias": "recolectadas"}],
+			"min_ingresadas": 200,
+		}
+		resultado = {
+			"columnas": ["taller_asignado", "total", "recolectadas"],
+			"filas": [["A", 10, 5]],
+		}
+		datos = {
+			"porcentajes": [],
+			"recolectadas_por_fila": [5],
+			"columnas": ["taller_asignado", "total", "recolectadas"],
+			"filas": [["A", 10, 5]],
+		}
+		self.assertEqual(
+			api._tabla_para_chat(spec, resultado, [], datos),
+			{"columnas": None, "filas": None},
+		)
 
 	def test_taller_en_recoleccion(self):
 		spec = {"group_by": ["id_taller"]}
@@ -1085,7 +1424,15 @@ class TestTablaEfectividad(FrappeTestCase):
 			spec, {"columnas": ["id_plaza", "total", "recolectadas"], "filas": []}, porcentajes
 		)
 		self.assertEqual(
-			out["columnas"], ["Plaza", "Ingresadas", "Recolectadas", "Efectividad", "Objetivo"]
+			out["columnas"],
+			[
+				"Plaza",
+				"Ingresadas",
+				"Recolectadas",
+				"Efectividad",
+				"Intervalo 95%",
+				"Objetivo",
+			],
 		)
 
 	def test_consulta_sin_filas_no_pinta_tabla(self):
@@ -2609,6 +2956,23 @@ class TestCrecimientoSiniestros(FrappeTestCase):
 			[["ene 2025", 100, "—"], ["feb 2025", 150, "+50.0%"], ["mar 2025", 120, "-20.0%"]],
 		)
 
+	def test_serie_con_interanual_y_promedio(self):
+		"""Con la serie del año anterior y los flags se llenan las columnas."""
+		resultado = {
+			"columnas": ["mes", "siniestros"],
+			"filas": [["2026-01", 120], ["2026-02", 150]],
+		}
+		previo = {
+			"columnas": ["mes", "siniestros"],
+			"filas": [["2025-01", 100], ["2025-02", 100]],
+		}
+		filas = api._serie_con_variacion(resultado, previo, True, True)
+		self.assertEqual(filas[0][3], "+20.0%")
+		self.assertEqual(filas[1][3], "+50.0%")
+		self.assertEqual(filas[1][4], "135")
+		# Sin flags no se agregan columnas de tendencia.
+		self.assertEqual(len(api._serie_con_variacion(resultado)[0]), 3)
+
 	def test_titulo_y_tabla_del_servidor(self):
 		spec = {
 			"group_by": ["mes"],
@@ -2839,7 +3203,7 @@ class TestPreferenciaPorRegion(FrappeTestCase):
 			],
 		}
 		self.assertEqual(
-			api._top_por_region(resultado), [["Norte", "Nissan", 15], ["Sur", "Toyota", 8]]
+			api._top_por_region(resultado), [["Norte", "Nissan", 12], ["Sur", "Toyota", 8]]
 		)
 
 	def test_titulo_y_tabla_del_servidor(self):
@@ -2982,6 +3346,13 @@ class TestValorEspecifico(FrappeTestCase):
 
 	def _spec(self):
 		return {"doctype": "Pieza", "fields": [], "filters": {}, "aggregations": []}
+
+	def test_el_umbral_de_piezas_no_es_una_submarca(self):
+		""""con al menos 200 piezas" es un corte, no la submarca "200"."""
+		out = api._completar_valor_especifico(
+			self._spec(), "efectividad por taller en septiembre con al menos 200 piezas"
+		)
+		self.assertNotIn("tipo", out["filters"])
 
 	def test_filtra_marca_y_no_toca_otras(self):
 		out = api._completar_valor_especifico(
@@ -3653,9 +4024,19 @@ class TestMasSeRecolectan(FrappeTestCase):
 			],
 		)
 		self.assertEqual(
-			columnas, ["Taller", "Ingresadas", "Recolectadas", "Efectividad", "Objetivo"]
+			columnas,
+			[
+				"Taller",
+				"Ingresadas",
+				"Recolectadas",
+				"Efectividad",
+				"Intervalo 95%",
+				"Objetivo",
+			],
 		)
-		self.assertEqual(filas, [["CELLINI", 228, 385, "168.9%", "Por encima"]])
+		self.assertEqual(
+			filas, [["CELLINI", 228, 385, "168.9%", "—", "Por encima"]]
+		)
 
 
 class TestPromedios(FrappeTestCase):
@@ -4145,6 +4526,14 @@ class TestEndpointsWhitelisted(FrappeTestCase):
 		self.addCleanup(frappe.set_user, "Administrator")
 		frappe.is_whitelisted(api.progreso)
 
+	def test_calificacion_esta_whitelisteada(self):
+		self.assertIn(api.calificar_respuesta, frappe.whitelisted)
+		self.assertIn(api.replicar_calificacion, frappe.whitelisted)
+		frappe.set_user("Administrator")
+		self.addCleanup(frappe.set_user, "Administrator")
+		frappe.is_whitelisted(api.calificar_respuesta)
+		frappe.is_whitelisted(api.replicar_calificacion)
+
 
 class TestPiezasVsPrecios(FrappeTestCase):
 	"""“Las piezas con su precio” (listado) ≠ “los precios” (agregado)."""
@@ -4311,7 +4700,15 @@ class TestTablaConMasDeUnaFila(FrappeTestCase):
 		}
 		out = api._tabla_para_chat(spec, resultado, [])
 		self.assertEqual(
-			out["columnas"], ["Taller", "Ingresadas", "Recolectadas", "Efectividad", "Objetivo"]
+			out["columnas"],
+			[
+				"Taller",
+				"Ingresadas",
+				"Recolectadas",
+				"Efectividad",
+				"Intervalo 95%",
+				"Objetivo",
+			],
 		)
 		self.assertEqual(len(out["filas"]), 2)
 
@@ -4980,8 +5377,9 @@ class TestComparacionContra(FrappeTestCase):
 		)
 		self.assertEqual(columnas, ["Concepto", "Septiembre de 2026", "Octubre de 2026"])
 		self.assertEqual(filas[0], ["Ingresadas", 100, 200])
-		self.assertEqual(filas[1], ["Recolectadas", 80, 150])
-		self.assertEqual(filas[2], ["Efectividad", "80.0%", "75.0%"])
+		# Recolectadas = en periodo + inconsistentes; las rezagadas no suman.
+		self.assertEqual(filas[1], ["Recolectadas", 60, 100])
+		self.assertEqual(filas[2], ["Efectividad", "60.0%", "50.0%"])
 
 	def test_comparacion_vacia(self):
 		self.assertTrue(api._comparacion_vacia(None))
@@ -5228,6 +5626,19 @@ class TestCrecimientoEntrePeriodos(FrappeTestCase):
 		cuatrimestres, _ = api._serie_por_bloque(resultado, "cuatrimestre")
 		self.assertEqual(cuatrimestres[0], ["1er cuatrimestre de 2026", 460, "—"])
 
+	def test_interanual_y_promedio_de_tres_bloques(self):
+		resultado = {
+			"columnas": ["mes", "piezas"],
+			"filas": [["2026-01", 120], ["2026-02", 150]],
+		}
+		previo = {
+			"columnas": ["mes", "piezas"],
+			"filas": [["2025-01", 100], ["2025-02", 100]],
+		}
+		filas, _ = api._serie_por_bloque(resultado, "mes", previo, True, True)
+		self.assertEqual(filas[0], ["ene 2026", 120, "—", "+20.0%", "120"])
+		self.assertEqual(filas[1], ["feb 2026", 150, "+25.0%", "+50.0%", "135"])
+
 	def test_la_efectividad_no_se_convierte_en_serie(self):
 		spec = {
 			"doctype": "Pieza",
@@ -5249,6 +5660,31 @@ class TestCrecimientoEntrePeriodos(FrappeTestCase):
 			api._titulo_crecimiento_periodos("variación de siniestros por cuatrimestre", "siniestros"),
 			"Crecimiento de siniestros por Cuatrimestre",
 		)
+
+
+class TestColumnasDeTendencia(FrappeTestCase):
+	"""Las columnas de tendencia solo se agregan si la pregunta las pide."""
+
+	def test_interanual_se_pide_explicito(self):
+		self.assertTrue(
+			api._pide_interanual("crecimiento de piezas por trimestre con interanual")
+		)
+		self.assertTrue(api._pide_interanual("variación interanual de siniestros"))
+		self.assertTrue(api._pide_interanual("crecimiento contra el año pasado"))
+		self.assertFalse(api._pide_interanual("crecimiento de piezas por trimestre"))
+		self.assertFalse(api._pide_interanual("siniestros del año anterior"))
+
+	def test_promedio_movil_se_pide_explicito(self):
+		self.assertTrue(api._pide_promedio_movil("crecimiento con promedio móvil"))
+		self.assertTrue(api._pide_promedio_movil("media móvil de 3 meses"))
+		self.assertTrue(api._pide_promedio_movil("promedio de 3"))
+		self.assertFalse(api._pide_promedio_movil("crecimiento de piezas por trimestre"))
+
+	def test_tendencia_pide_las_dos(self):
+		self.assertTrue(
+			api._pide_columnas_de_tendencia("crecimiento de piezas por trimestre con tendencia")
+		)
+		self.assertFalse(api._pide_columnas_de_tendencia("crecimiento de piezas por trimestre"))
 
 
 class TestCrecimientoPorDimension(FrappeTestCase):
@@ -5389,7 +5825,18 @@ class TestMapaDeEfectividad(FrappeTestCase):
 			],
 		}
 		columnas, filas = api._tabla_mapa_efectividad(spec, resultado)
-		self.assertEqual(columnas, ["Región", "Ingresadas", "Recolectadas", "Efectividad", "Objetivo", "Mapa"])
+		self.assertEqual(
+			columnas,
+			[
+				"Región",
+				"Ingresadas",
+				"Recolectadas",
+				"Efectividad",
+				"Intervalo 95%",
+				"Objetivo",
+				"Mapa",
+			],
+		)
 		# Ordenado de mayor a menor efectividad; el grupo sin ingresadas no entra.
 		self.assertEqual([f[0] for f in filas], ["Occidente", "Bajío", "Norte"])
 		self.assertEqual([f[-1] for f in filas], ["🟢", "🟡", "🔴"])
@@ -5921,13 +6368,15 @@ class TestFichaTaller(FrappeTestCase):
 			],
 		)
 		self.assertEqual(filas[0][1], 200)
-		self.assertEqual(filas[1][1], 150)
+		# Recolectadas = en periodo + inconsistentes (100 + 20); las rezagadas
+		# recolectadas (30) no suman.
+		self.assertEqual(filas[1][1], 120)
 		self.assertEqual(filas[2][1], 5)
 		self.assertEqual(filas[3][1], 40)
-		self.assertEqual(filas[4][1], "75.0%")
+		self.assertEqual(filas[4][1], "60.0%")
 		self.assertEqual(filas[5][1], 12)
-		# Efectividad 150/200 = 75.0% contra 60.0% del período anterior.
-		self.assertEqual(filas[6][1], "+15.0 pts")
+		# Efectividad 120/200 = 60.0% contra 60.0% del período anterior.
+		self.assertEqual(filas[6][1], "+0.0 pts")
 
 
 	def test_variacion_sin_periodo_anterior(self):

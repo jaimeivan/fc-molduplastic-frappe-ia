@@ -1,372 +1,382 @@
 {
-  "actions": [],
-  "creation": "2026-10-06 00:00:00.000000",
-  "doctype": "DocType",
-  "engine": "InnoDB",
-  "field_order": [
-    "proveedores_section",
-    "proveedor_defecto",
-    "column_break_ia0",
-    "timeout_llm",
-    "proveedores",
-    "opencode_section",
-    "opencode_zen_api_key",
-    "limites_section",
-    "max_limit",
-    "column_break_ia3",
-    "max_llamadas_por_minuto",
-    "max_tokens_respuesta",
-    "intentos_respuesta",
-    "contexto_conv_section",
-    "max_turnos_contexto",
-    "column_break_ia5",
-    "max_chars_contexto",
-    "sync_section",
-    "sync_source_host",
-    "sync_source_port",
-    "sync_source_database",
-    "sync_source_user",
-    "sync_source_password",
-    "sync_ssl",
-    "sync_ssl_ca",
-    "sync_column_break",
-    "sync_batch_size",
-    "sync_pause_ms",
-    "sync_checkpoints_json",
-    "sugerencias_section",
-    "sugerencias",
-    "analisis_section",
-    "modo_respuesta",
-    "objetivo_efectividad",
-    "column_break_analisis",
-    "presupuesto_analisis_seg",
-    "dias_maximos_analisis",
-    "min_piezas_porcentaje",
-    "umbral_caida_pp",
-    "umbral_concentracion_pct",
-    "tendencia_periodos",
-    "comparar_ano_anterior",
-    "verificacion_cifras",
-    "preguntas_sugeridas_activas",
-    "modo_excepciones",
-    "glosario_section",
-    "glosario"
-  ],
-  "fields": [
-    {
-      "fieldname": "proveedores_section",
-      "fieldtype": "Section Break",
-      "label": "Proveedores LLM (rutas eco/pro + fallback por orden)"
-    },
-    {
-      "default": "Automático",
-      "fieldname": "proveedor_defecto",
-      "fieldtype": "Select",
-      "label": "Ruta por defecto",
-      "options": "Automático\nEconómico\nProfundo"
-    },
-    {
-      "fieldname": "column_break_ia0",
-      "fieldtype": "Column Break"
-    },
-    {
-      "default": "120",
-      "fieldname": "timeout_llm",
-      "fieldtype": "Int",
-      "label": "Timeout LLM (segundos)"
-    },
-    {
-      "fieldname": "proveedores",
-      "fieldtype": "Table",
-      "label": "Proveedores",
-      "options": "IA Proveedor"
-    },
-    {
-      "fieldname": "opencode_section",
-      "fieldtype": "Section Break",
-      "label": "Opencode Zen (https://opencode.ai/zen)"
-    },
-    {
-      "fieldname": "opencode_zen_api_key",
-      "fieldtype": "Password",
-      "label": "Console API Key (para modo Opencode Zen)"
-    },
-    {
-      "fieldname": "limites_section",
-      "fieldtype": "Section Break",
-      "label": "Límites operativos"
-    },
-    {
-      "default": "500",
-      "fieldname": "max_limit",
-      "fieldtype": "Int",
-      "label": "Límite máximo de filas por consulta"
-    },
-    {
-      "fieldname": "column_break_ia3",
-      "fieldtype": "Column Break"
-    },
-    {
-      "default": "20",
-      "fieldname": "max_llamadas_por_minuto",
-      "fieldtype": "Int",
-      "label": "Máx. preguntas por minuto y usuario"
-    },
-    {
-      "default": "2000",
-      "fieldname": "max_tokens_respuesta",
-      "fieldtype": "Int",
-      "label": "Máx. tokens de respuesta (solo HTTP)"
-    },
-    {
-      "default": "2",
-      "description": "Cuántas veces se intenta cada llamada al proveedor de IA cuando falla (timeout, error del proveedor, respuesta vacía o JSON inválido). 1 = sin reintento; 2 = un segundo intento. No aplica a errores de saldo ni de configuración, que no se arreglan reintentando.",
-      "fieldname": "intentos_respuesta",
-      "fieldtype": "Int",
-      "label": "Intentos por llamada al modelo",
-      "reqd": 1
-    },
-    {
-      "fieldname": "contexto_conv_section",
-      "fieldtype": "Section Break",
-      "label": "Contexto conversacional (historial del chat)"
-    },
-    {
-      "default": "3",
-      "description": "Cuántos turnos previos (pregunta + respuesta) se reenvían al modelo para resolver referencias como \"y por taller?\" o \"esos mismos\". No es la ventana de contexto del modelo.",
-      "fieldname": "max_turnos_contexto",
-      "fieldtype": "Int",
-      "label": "Máx. turnos de historial en el prompt",
-      "reqd": 1
-    },
-    {
-      "fieldname": "column_break_ia5",
-      "fieldtype": "Column Break"
-    },
-    {
-      "default": "400",
-      "description": "Recorte de cada pregunta y de cada respuesta del historial antes de mandarlas al modelo.",
-      "fieldname": "max_chars_contexto",
-      "fieldtype": "Int",
-      "label": "Máx. caracteres por pregunta/respuesta del historial",
-      "reqd": 1
-    },
-    {
-      "fieldname": "sync_section",
-      "fieldtype": "Section Break",
-      "label": "Sincronización manual desde producción"
-    },
-    {
-      "description": "Servidor de base de datos de producción. La cuenta debe tener SELECT en las tablas/vistas y SHOW VIEW para descubrir dependencias; no requiere permisos de escritura.",
-      "fieldname": "sync_source_host",
-      "fieldtype": "Data",
-      "label": "Host de origen"
-    },
-    {
-      "default": "3306",
-      "fieldname": "sync_source_port",
-      "fieldtype": "Int",
-      "label": "Puerto de origen"
-    },
-    {
-      "fieldname": "sync_source_database",
-      "fieldtype": "Data",
-      "label": "Base de datos de origen"
-    },
-    {
-      "fieldname": "sync_source_user",
-      "fieldtype": "Data",
-      "label": "Usuario de solo lectura"
-    },
-    {
-      "fieldname": "sync_source_password",
-      "fieldtype": "Password",
-      "label": "Contraseña de origen"
-    },
-    {
-      "default": "1",
-      "description": "Usa TLS al conectar con producción. Si el servidor usa una CA privada, configura su ruta en el campo siguiente.",
-      "fieldname": "sync_ssl",
-      "fieldtype": "Check",
-      "label": "Conexión TLS"
-    },
-    {
-      "fieldname": "sync_ssl_ca",
-      "fieldtype": "Data",
-      "label": "Ruta local del certificado CA (opcional)"
-    },
-    {
-      "fieldname": "sync_column_break",
-      "fieldtype": "Column Break"
-    },
-    {
-      "default": "500",
-      "description": "Filas por lote (se limita a un máximo de 2,000).",
-      "fieldname": "sync_batch_size",
-      "fieldtype": "Int",
-      "label": "Tamaño de lote"
-    },
-    {
-      "default": "100",
-      "description": "Pausa entre lotes para reducir la carga sobre producción y esta copia.",
-      "fieldname": "sync_pause_ms",
-      "fieldtype": "Int",
-      "label": "Pausa entre lotes (ms)"
-    },
-    {
-      "default": "{}",
-      "fieldname": "sync_checkpoints_json",
-      "fieldtype": "Code",
-      "hidden": 1,
-      "label": "Checkpoints internos de sincronización",
-      "read_only": 1
-    },
-    {
-      "fieldname": "sugerencias_section",
-      "fieldtype": "Section Break",
-      "label": "Sugerencias del asistente"
-    },
-    {
-      "fieldname": "sugerencias",
-      "fieldtype": "Table",
-      "label": "Sugerencias",
-      "options": "IA Sugerencias"
-    },
-    {
-      "fieldname": "analisis_section",
-      "fieldtype": "Section Break",
-      "label": "Análisis de respuestas"
-    },
-    {
-      "default": "Breve",
-      "fieldname": "modo_respuesta",
-      "fieldtype": "Select",
-      "label": "Modo de respuesta",
-      "options": "Breve\nAnalítico",
-      "description": "Breve: la respuesta de siempre. Analítico: cifra, lectura y sugerencias basadas en los datos. Solo lo cambia el administrador; el chat no tiene control de modo.",
-      "reqd": 1
-    },
-    {
-      "default": "75",
-      "fieldname": "objetivo_efectividad",
-      "fieldtype": "Float",
-      "label": "Objetivo de efectividad (%)",
-      "description": "Meta de recolectadas sobre ingresadas. Se usa en las tablas de efectividad y en la lectura analítica.",
-      "reqd": 1
-    },
-    {
-      "fieldname": "column_break_analisis",
-      "fieldtype": "Column Break"
-    },
-    {
-      "default": "240",
-      "fieldname": "presupuesto_analisis_seg",
-      "fieldtype": "Int",
-      "label": "Presupuesto de tiempo del análisis (segundos)",
-      "description": "Tiempo total para la respuesta analítica, contado desde que llega la pregunta. Si no alcanza, se entrega la respuesta breve con una nota. Máximo 240 (el proxy corta a los 240 s): la respuesta de respaldo necesita ~35 s, que el análisis no usa.",
-      "reqd": 1
-    },
-    {
-      "default": "31",
-      "fieldname": "dias_maximos_analisis",
-      "fieldtype": "Int",
-      "label": "Días máximos para el análisis completo",
-      "description": "Un período de más días responde en breve con un aviso, aunque el modo sea Analítico. Medido el 2026-11-11: los rangos largos consumen el presupuesto y dejan la respuesta sin análisis. 31 = un mes.",
-      "reqd": 1
-    },
-    {
-      "default": "50",
-      "fieldname": "min_piezas_porcentaje",
-      "fieldtype": "Int",
-      "label": "Mínimo de piezas para hallazgos de porcentaje",
-      "description": "Un porcentaje (efectividad, comparativos) solo genera hallazgo si la base tiene al menos esta cantidad de ingresadas. No aplica a conteos ni listados.",
-      "reqd": 1
-    },
-    {
-      "default": "5",
-      "fieldname": "umbral_caida_pp",
-      "fieldtype": "Float",
-      "label": "Umbral de caída de efectividad (puntos)",
-      "description": "Puntos porcentuales por debajo del objetivo o del período anterior a partir de los cuales se alerta. El doble se marca como alta severidad.",
-      "reqd": 1
-    },
-    {
-      "default": "60",
-      "fieldname": "umbral_concentracion_pct",
-      "fieldtype": "Float",
-      "label": "Umbral de concentración (%)",
-      "description": "Participación de los 3 grupos principales en las piezas no recolectadas a partir de la cual se alerta.",
-      "reqd": 1
-    },
-    {
-      "default": "0",
-      "fieldname": "tendencia_periodos",
-      "fieldtype": "Int",
-      "label": "Períodos de tendencia",
-      "description": "Cuántos períodos anteriores se muestran en la tendencia (0 a 6). Cada período es una consulta completa: con tenants grandes consume el presupuesto de tiempo. 0 la desactiva.",
-      "reqd": 1
-    },
-    {
-      "default": "1",
-      "fieldname": "comparar_ano_anterior",
-      "fieldtype": "Check",
-      "label": "Comparar contra el mismo período del año anterior",
-      "description": "Medido el 2026-11-11 en GNP: el mismo mes de 2025 tarda ~31 s, casi todo el presupuesto de tiempo. Desactívelo si las respuestas analíticas se quedan sin análisis por tiempo."
-    },
-    {
-      "default": "1",
-      "fieldname": "verificacion_cifras",
-      "fieldtype": "Check",
-      "label": "Verificar cifras de la lectura analítica",
-      "description": "Compara cada número de la respuesta analítica con los Datos. Si hay cifras sin respaldo, reintenta una vez, recorta las frases afectadas o quita la lectura. Activa por defecto."
-    },
-    {
-      "default": "1",
-      "fieldname": "preguntas_sugeridas_activas",
-      "fieldtype": "Check",
-      "label": "Mostrar preguntas sugeridas en el análisis",
-      "description": "Botones con preguntas de seguimiento bajo la respuesta analítica. Salen del playbook de la intención, nunca del modelo."
-    },
-    {
-      "fieldname": "modo_excepciones",
-      "fieldtype": "Table",
-      "label": "Excepciones por intención",
-      "options": "IA Modo Intencion",
-      "description": "Para activar el modo analítico solo en algunas intenciones. Sin fila, rige el modo de respuesta."
-    },
-    {
-      "fieldname": "glosario_section",
-      "fieldtype": "Section Break",
-      "label": "Glosario de negocio"
-    },
-    {
-      "fieldname": "glosario",
-      "fieldtype": "Table",
-      "label": "Glosario",
-      "options": "IA Glosario",
-      "description": "Definiciones, umbrales, causas y acciones por intención. Las entradas en Borrador no se usan; las validadas por el administrador sí."
-    }
-  ],
-  "index_web_pages_for_search": 0,
-  "issingle": 1,
-  "links": [],
-  "modified": "2026-11-12 12:00:00.000000",
-  "modified_by": "Administrator",
-  "module": "Molduplastic IA",
-  "name": "Molduplastic IA Settings",
-  "owner": "Administrator",
-  "permissions": [
-    {
-      "create": 1,
-      "delete": 1,
-      "email": 1,
-      "export": 1,
-      "print": 1,
-      "read": 1,
-      "report": 1,
-      "role": "System Manager",
-      "share": 1,
-      "write": 1
-    }
-  ]
+ "actions": [],
+ "creation": "2026-10-06 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "proveedores_section",
+  "proveedor_defecto",
+  "column_break_ia0",
+  "timeout_llm",
+  "proveedores",
+  "opencode_section",
+  "opencode_zen_api_key",
+  "limites_section",
+  "max_limit",
+  "column_break_ia3",
+  "max_llamadas_por_minuto",
+  "max_tokens_respuesta",
+  "intentos_respuesta",
+  "contexto_conv_section",
+  "max_turnos_contexto",
+  "column_break_ia5",
+  "max_chars_contexto",
+  "sync_section",
+  "sync_source_host",
+  "sync_source_port",
+  "sync_source_database",
+  "sync_source_user",
+  "sync_source_password",
+  "sync_ssl",
+  "sync_ssl_ca",
+  "sync_column_break",
+  "sync_batch_size",
+  "sync_pause_ms",
+  "sync_checkpoints_json",
+  "sugerencias_section",
+  "sugerencias",
+  "analisis_section",
+  "modo_respuesta",
+  "objetivo_efectividad",
+  "column_break_analisis",
+  "presupuesto_analisis_seg",
+  "dias_maximos_analisis",
+  "min_piezas_porcentaje",
+  "umbral_caida_pp",
+  "umbral_concentracion_pct",
+  "tendencia_periodos",
+  "comparar_ano_anterior",
+  "verificacion_cifras",
+  "preguntas_sugeridas_activas",
+  "modo_sugerencias",
+  "modo_excepciones",
+  "glosario_section",
+  "glosario"
+ ],
+ "fields": [
+  {
+   "fieldname": "proveedores_section",
+   "fieldtype": "Section Break",
+   "label": "Proveedores LLM (rutas eco/pro + fallback por orden)"
+  },
+  {
+   "default": "Automático",
+   "fieldname": "proveedor_defecto",
+   "fieldtype": "Select",
+   "label": "Ruta por defecto",
+   "options": "Automático\nEconómico\nProfundo"
+  },
+  {
+   "fieldname": "column_break_ia0",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "120",
+   "fieldname": "timeout_llm",
+   "fieldtype": "Int",
+   "label": "Timeout LLM (segundos)"
+  },
+  {
+   "fieldname": "proveedores",
+   "fieldtype": "Table",
+   "label": "Proveedores",
+   "options": "IA Proveedor"
+  },
+  {
+   "fieldname": "opencode_section",
+   "fieldtype": "Section Break",
+   "label": "Opencode Zen (https://opencode.ai/zen)"
+  },
+  {
+   "fieldname": "opencode_zen_api_key",
+   "fieldtype": "Password",
+   "label": "Console API Key (para modo Opencode Zen)"
+  },
+  {
+   "fieldname": "limites_section",
+   "fieldtype": "Section Break",
+   "label": "Límites operativos"
+  },
+  {
+   "default": "500",
+   "fieldname": "max_limit",
+   "fieldtype": "Int",
+   "label": "Límite máximo de filas por consulta"
+  },
+  {
+   "fieldname": "column_break_ia3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "20",
+   "fieldname": "max_llamadas_por_minuto",
+   "fieldtype": "Int",
+   "label": "Máx. preguntas por minuto y usuario"
+  },
+  {
+   "default": "2000",
+   "fieldname": "max_tokens_respuesta",
+   "fieldtype": "Int",
+   "label": "Máx. tokens de respuesta (solo HTTP)"
+  },
+  {
+   "default": "2",
+   "description": "Cuántas veces se intenta cada llamada al proveedor de IA cuando falla (timeout, error del proveedor, respuesta vacía o JSON inválido). 1 = sin reintento; 2 = un segundo intento. No aplica a errores de saldo ni de configuración, que no se arreglan reintentando.",
+   "fieldname": "intentos_respuesta",
+   "fieldtype": "Int",
+   "label": "Intentos por llamada al modelo",
+   "reqd": 1
+  },
+  {
+   "fieldname": "contexto_conv_section",
+   "fieldtype": "Section Break",
+   "label": "Contexto conversacional (historial del chat)"
+  },
+  {
+   "default": "3",
+   "description": "Cuántos turnos previos (pregunta + respuesta) se reenvían al modelo para resolver referencias como \"y por taller?\" o \"esos mismos\". No es la ventana de contexto del modelo.",
+   "fieldname": "max_turnos_contexto",
+   "fieldtype": "Int",
+   "label": "Máx. turnos de historial en el prompt",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_ia5",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "400",
+   "description": "Recorte de cada pregunta y de cada respuesta del historial antes de mandarlas al modelo.",
+   "fieldname": "max_chars_contexto",
+   "fieldtype": "Int",
+   "label": "Máx. caracteres por pregunta/respuesta del historial",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sync_section",
+   "fieldtype": "Section Break",
+   "label": "Sincronización manual desde producción"
+  },
+  {
+   "description": "Servidor de base de datos de producción. La cuenta debe tener SELECT en las tablas/vistas y SHOW VIEW para descubrir dependencias; no requiere permisos de escritura.",
+   "fieldname": "sync_source_host",
+   "fieldtype": "Data",
+   "label": "Host de origen"
+  },
+  {
+   "default": "3306",
+   "fieldname": "sync_source_port",
+   "fieldtype": "Int",
+   "label": "Puerto de origen"
+  },
+  {
+   "fieldname": "sync_source_database",
+   "fieldtype": "Data",
+   "label": "Base de datos de origen"
+  },
+  {
+   "fieldname": "sync_source_user",
+   "fieldtype": "Data",
+   "label": "Usuario de solo lectura"
+  },
+  {
+   "fieldname": "sync_source_password",
+   "fieldtype": "Password",
+   "label": "Contraseña de origen"
+  },
+  {
+   "default": "1",
+   "description": "Usa TLS al conectar con producción. Si el servidor usa una CA privada, configura su ruta en el campo siguiente.",
+   "fieldname": "sync_ssl",
+   "fieldtype": "Check",
+   "label": "Conexión TLS"
+  },
+  {
+   "fieldname": "sync_ssl_ca",
+   "fieldtype": "Data",
+   "label": "Ruta local del certificado CA (opcional)"
+  },
+  {
+   "fieldname": "sync_column_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "500",
+   "description": "Filas por lote (se limita a un máximo de 2,000).",
+   "fieldname": "sync_batch_size",
+   "fieldtype": "Int",
+   "label": "Tamaño de lote"
+  },
+  {
+   "default": "100",
+   "description": "Pausa entre lotes para reducir la carga sobre producción y esta copia.",
+   "fieldname": "sync_pause_ms",
+   "fieldtype": "Int",
+   "label": "Pausa entre lotes (ms)"
+  },
+  {
+   "default": "{}",
+   "fieldname": "sync_checkpoints_json",
+   "fieldtype": "Code",
+   "hidden": 1,
+   "label": "Checkpoints internos de sincronización",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sugerencias_section",
+   "fieldtype": "Section Break",
+   "label": "Sugerencias del asistente"
+  },
+  {
+   "fieldname": "sugerencias",
+   "fieldtype": "Table",
+   "label": "Sugerencias",
+   "options": "IA Sugerencias"
+  },
+  {
+   "fieldname": "analisis_section",
+   "fieldtype": "Section Break",
+   "label": "Análisis de respuestas"
+  },
+  {
+   "default": "Breve",
+   "fieldname": "modo_respuesta",
+   "fieldtype": "Select",
+   "label": "Modo de respuesta",
+   "options": "Breve\nAnalítico",
+   "description": "Breve: la respuesta de siempre. Analítico: cifra, lectura y sugerencias basadas en los datos. Solo lo cambia el administrador; el chat no tiene control de modo.",
+   "reqd": 1
+  },
+  {
+   "default": "75",
+   "fieldname": "objetivo_efectividad",
+   "fieldtype": "Float",
+   "label": "Objetivo de efectividad (%)",
+   "description": "Meta de recolectadas sobre ingresadas. Se usa en las tablas de efectividad y en la lectura analítica.",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_analisis",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "240",
+   "fieldname": "presupuesto_analisis_seg",
+   "fieldtype": "Int",
+   "label": "Presupuesto de tiempo del análisis (segundos)",
+   "description": "Tiempo total para la respuesta analítica, contado desde que llega la pregunta. Si no alcanza, se entrega la respuesta breve con una nota. Máximo 240 (el proxy corta a los 240 s): la respuesta de respaldo necesita ~35 s, que el análisis no usa.",
+   "reqd": 1
+  },
+  {
+   "default": "31",
+   "fieldname": "dias_maximos_analisis",
+   "fieldtype": "Int",
+   "label": "Días máximos para el análisis completo",
+   "description": "Un período de más días responde en breve con un aviso, aunque el modo sea Analítico. Medido el 2026-11-11: los rangos largos consumen el presupuesto y dejan la respuesta sin análisis. 31 = un mes.",
+   "reqd": 1
+  },
+  {
+   "default": "50",
+   "fieldname": "min_piezas_porcentaje",
+   "fieldtype": "Int",
+   "label": "Mínimo de piezas para hallazgos de porcentaje",
+   "description": "Un porcentaje (efectividad, comparativos) solo genera hallazgo si la base tiene al menos esta cantidad de ingresadas. No aplica a conteos ni listados.",
+   "reqd": 1
+  },
+  {
+   "default": "5",
+   "fieldname": "umbral_caida_pp",
+   "fieldtype": "Float",
+   "label": "Umbral de caída de efectividad (puntos)",
+   "description": "Puntos porcentuales por debajo del objetivo o del período anterior a partir de los cuales se alerta. El doble se marca como alta severidad.",
+   "reqd": 1
+  },
+  {
+   "default": "60",
+   "fieldname": "umbral_concentracion_pct",
+   "fieldtype": "Float",
+   "label": "Umbral de concentración (%)",
+   "description": "Participación de los 3 grupos principales en las piezas no recolectadas a partir de la cual se alerta.",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "tendencia_periodos",
+   "fieldtype": "Int",
+   "label": "Períodos de tendencia",
+   "description": "Cuántos períodos anteriores se muestran en la tendencia (0 a 6). Cada período es una consulta completa: con tenants grandes consume el presupuesto de tiempo. 0 la desactiva.",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "comparar_ano_anterior",
+   "fieldtype": "Check",
+   "label": "Comparar contra el mismo período del año anterior",
+   "description": "Medido el 2026-11-11 en GNP: el mismo mes de 2025 tarda ~31 s, casi todo el presupuesto de tiempo. Desactívelo si las respuestas analíticas se quedan sin análisis por tiempo."
+  },
+  {
+   "default": "1",
+   "fieldname": "verificacion_cifras",
+   "fieldtype": "Check",
+   "label": "Verificar cifras de la lectura analítica",
+   "description": "Compara cada número de la respuesta analítica con los Datos. Si hay cifras sin respaldo, reintenta una vez, recorta las frases afectadas o quita la lectura. Activa por defecto."
+  },
+  {
+   "default": "1",
+   "fieldname": "preguntas_sugeridas_activas",
+   "fieldtype": "Check",
+   "label": "Mostrar preguntas sugeridas en el análisis",
+   "description": "Botones con preguntas de seguimiento bajo la respuesta analítica. El origen (playbook, hallazgos o modelo) se elige en el campo siguiente."
+  },
+  {
+   "default": "Modelo libre",
+   "description": "De dónde salen los botones de seguimiento del análisis: Playbook (preguntas fijas), Hallazgos + catálogo (derivadas de lo detectado) o Modelo libre (las propone el modelo y se validan).",
+   "fieldname": "modo_sugerencias",
+   "fieldtype": "Select",
+   "label": "Modo de las preguntas sugeridas",
+   "options": "Playbook\nHallazgos + catálogo\nModelo libre",
+   "reqd": 1
+  },
+  {
+   "fieldname": "modo_excepciones",
+   "fieldtype": "Table",
+   "label": "Excepciones por intención",
+   "options": "IA Modo Intencion",
+   "description": "Para activar el modo analítico solo en algunas intenciones. Sin fila, rige el modo de respuesta."
+  },
+  {
+   "fieldname": "glosario_section",
+   "fieldtype": "Section Break",
+   "label": "Glosario de negocio"
+  },
+  {
+   "fieldname": "glosario",
+   "fieldtype": "Table",
+   "label": "Glosario",
+   "options": "IA Glosario",
+   "description": "Definiciones, umbrales, causas y acciones por intención. Las entradas en Borrador no se usan; las validadas por el administrador sí."
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-11-23 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Molduplastic IA",
+ "name": "Molduplastic IA Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ]
 }

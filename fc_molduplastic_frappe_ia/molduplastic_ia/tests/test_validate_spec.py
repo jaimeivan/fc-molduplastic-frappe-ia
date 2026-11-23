@@ -615,7 +615,7 @@ class TestEfectividadPorDimension(FrappeTestCase):
 					"filtros": {
 						"id_estatus": ["=", 100],
 						"fecha_hora_recoleccion": [
-							["mes_igual", {"campo": "fecha_hora_carga"}],
+							["between", "2026-10-01 00:00:00", "2026-10-19 23:59:59"],
 							[">=", {"campo": "fecha_hora_carga"}],
 						],
 					},
