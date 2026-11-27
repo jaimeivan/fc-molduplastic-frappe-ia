@@ -15,6 +15,25 @@ from fc_molduplastic_frappe_ia.molduplastic_ia import instalacion
 APPS = ["frappe", "fc_molduplastic_frappe_app"]
 
 
+class TestVerificarEntorno(FrappeTestCase):
+	def test_con_pkg_resources_continua(self):
+		with patch.object(instalacion, "import_module") as importar:
+			instalacion.verificar_dependencias_entorno()
+			importar.assert_called_once_with("pkg_resources")
+
+	def test_sin_pkg_resources_aborta_con_el_comando(self):
+		with patch.object(
+			instalacion,
+			"import_module",
+			side_effect=ImportError("No module named 'pkg_resources'"),
+		):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				instalacion.verificar_dependencias_entorno()
+		mensaje = str(ctx.exception)
+		self.assertIn("setuptools", mensaje)
+		self.assertIn("Dropbox", mensaje)
+
+
 class TestVerificarDependencias(FrappeTestCase):
 	def test_si_la_app_hermana_no_esta_instalada_no_hace_nada(self):
 		with (

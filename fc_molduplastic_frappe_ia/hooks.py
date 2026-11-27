@@ -93,7 +93,8 @@ required_apps = ["fc_molduplastic_frappe_app"]
 # (faltan thefuzz/unidecode en el env). El before_migrate corta antes del borrado;
 # el after_migrate corre después y restaura los que ya se habían perdido.
 before_migrate = [
-	"fc_molduplastic_frappe_ia.molduplastic_ia.instalacion.verificar_dependencias_hermana"
+	"fc_molduplastic_frappe_ia.molduplastic_ia.instalacion.verificar_dependencias_entorno",
+	"fc_molduplastic_frappe_ia.molduplastic_ia.instalacion.verificar_dependencias_hermana",
 ]
 after_migrate = [
 	"fc_molduplastic_frappe_ia.molduplastic_ia.instalacion.restaurar_doctypes_hermana"

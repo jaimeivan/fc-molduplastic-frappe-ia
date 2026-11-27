@@ -47,13 +47,19 @@ importa: migrar, índices, configuración, caché y reinicio.
 - Confirma las dependencias de la app hermana **en el env de ese servidor**:
   ```bash
   cd /home/frappe/frappe-bench
-  ./env/bin/python -c "import thefuzz, unidecode; print('deps ok')" \
-    || ./env/bin/pip install -r apps/fc_molduplastic_frappe_app/requirements.txt
+  ./env/bin/python -c "import pkg_resources, thefuzz, unidecode; print('deps ok')" || {
+    ./env/bin/pip install "setuptools==80.9.0"
+    ./env/bin/pip install -r apps/fc_molduplastic_frappe_app/requirements.txt
+  }
   ```
-  Si faltan, `remove_orphan_doctypes` (el último paso de `bench migrate`) borra el
-  registro de `Pieza` y `Carga Archivo` porque su controlador no importa. Desde
-  esta versión `bench migrate` **aborta antes** con un mensaje claro, pero la
-  solución es instalar las dependencias.
+  - `thefuzz`/`unidecode`: si faltan, `remove_orphan_doctypes` (el último paso de
+    `bench migrate`) borra el registro de `Pieza` y `Carga Archivo` porque su
+    controlador no importa. Desde esta versión `bench migrate` **aborta antes**
+    con un mensaje claro, pero la solución es instalar las dependencias.
+  - `pkg_resources` (setuptools): el DocType `Dropbox Settings` de Frappe importa
+    el SDK de Dropbox y, sin setuptools, `sync_all` aborta a media migración con
+    `No module named 'pkg_resources'`. El `before_migrate` de la app también lo
+    valida y corta con el comando exacto.
 - Espacio y motor: deja **≥ 4 GB libres** (los índices de `tabPieza` quedan en
   ~3.3 GB), MariaDB 10.11 y `innodb_buffer_pool_size=1G`.
 

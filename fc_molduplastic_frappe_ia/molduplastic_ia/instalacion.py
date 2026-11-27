@@ -64,6 +64,24 @@ INDICES_IA = (
 )
 
 
+def verificar_dependencias_entorno():
+	"""Corta el migrate si falta pkg_resources (setuptools).
+
+	`sync_all` importa el controlador de `Dropbox Settings` de Frappe, que hace
+	`import dropbox` y el SDK necesita `pkg_resources`. Sin setuptools el migrate
+	aborta a media sincronización con un ImportError poco claro.
+	"""
+	try:
+		import_module("pkg_resources")
+	except ImportError:
+		frappe.throw(
+			"No se puede migrar: falta `pkg_resources` (setuptools) en el env. "
+			"El DocType Dropbox Settings de Frappe importa el SDK de Dropbox y "
+			"sync_all aborta. Instálalo antes de migrar: "
+			"`./env/bin/pip install setuptools==80.9.0`."
+		)
+
+
 def verificar_dependencias_hermana():
 	"""Corta el migrate si la app hermana no puede importar sus controladores."""
 	if APP_HERMANA not in frappe.get_installed_apps():
