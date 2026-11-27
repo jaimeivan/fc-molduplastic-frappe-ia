@@ -8,8 +8,50 @@ PRESUPUESTO_MAXIMO_SEG = 240
 # Tope de intentos por llamada al modelo (1 = sin reintento).
 INTENTOS_MAXIMOS = 5
 
+# Valores que un Single que ya existía no tiene cuando se le agregan campos
+# nuevos: `load_from_db` solo carga lo guardado, sin defaults. Durante un
+# parche se siembran para que las semillas puedan guardar en cualquier orden
+# (en la actualización de staging, el primer parche que guardó el Single lo
+# rechazó porque `objetivo_efectividad` estaba en 0).
+DEFAULTS_EN_PARCHE = {
+	"objetivo_efectividad": 75,
+	"presupuesto_analisis_seg": PRESUPUESTO_MAXIMO_SEG,
+	"dias_maximos_analisis": 31,
+	"min_piezas_porcentaje": 50,
+	"umbral_caida_pp": 5,
+	"umbral_concentracion_pct": 60,
+	"tendencia_periodos": 0,
+	"intentos_respuesta": 2,
+	"max_turnos_contexto": 3,
+	"max_chars_contexto": 400,
+	"modo_respuesta": "Breve",
+	"modo_sugerencias": "Modelo libre",
+}
+# Estos Check sin valor guardado se leen como apagados; el default es encendido.
+CHECKS_EN_PARCHE = ("comparar_ano_anterior", "verificacion_cifras", "preguntas_sugeridas_activas")
+# Único campo donde 0 es un valor de negocio y no "sin sembrar".
+CERO_VALIDO = {"tendencia_periodos"}
+
 
 class MolduplasticIASettings(Document):
+	def before_validate(self):
+		"""Rellena lo que falte mientras corre un parche de migración.
+
+		El administrador conserva la validación estricta: fuera de un parche, un
+		0 en el objetivo sigue siendo un error. Durante `migrate` se usan los
+		defaults para que un Single viejo pueda guardarse aunque todavía no hayan
+		corrido los parches que siembran cada campo.
+		"""
+		if not (frappe.flags.in_patch or frappe.flags.in_migrate):
+			return
+		for campo, valor in DEFAULTS_EN_PARCHE.items():
+			actual = self.get(campo)
+			if actual in (None, "") or (actual == 0 and campo not in CERO_VALIDO):
+				self.set(campo, valor)
+		for campo in CHECKS_EN_PARCHE:
+			if self.get(campo) is None:
+				self.set(campo, 1)
+
 	def validate(self):
 		self._validar_analisis()
 

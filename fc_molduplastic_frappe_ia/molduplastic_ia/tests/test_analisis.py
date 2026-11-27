@@ -149,6 +149,15 @@ class TestObjetivoEnConfiguracion(ConfigMixin, FrappeTestCase):
 		self.assertEqual(F.objetivo_efectividad(), 80)
 		self.assertEqual(api._etiqueta_objetivo(78), "Por debajo")
 
+	def test_sin_objetivo_cae_a_75(self):
+		"""Un Single viejo con el campo en 0 no tumba el prompt (staging, 2026-11-27)."""
+		frappe.db.set_single_value(SETTINGS, "objetivo_efectividad", 0)
+		frappe.clear_document_cache(SETTINGS, SETTINGS)
+		try:
+			self.assertEqual(F.objetivo_efectividad(), 75)
+		finally:
+			self.configurar(objetivo_efectividad=75)
+
 	def test_decimal_se_devuelve_como_float(self):
 		self.configurar(objetivo_efectividad=72.5)
 		self.assertEqual(F.objetivo_efectividad(), 72.5)
@@ -159,6 +168,32 @@ class TestObjetivoEnConfiguracion(ConfigMixin, FrappeTestCase):
 
 	def test_la_constante_ya_no_existe(self):
 		self.assertFalse(hasattr(F, "OBJETIVO_EFECTIVIDAD"))
+
+
+class TestSembrarEnParches(FrappeTestCase):
+	"""Un Single que ya existía no recibe los defaults de los campos nuevos."""
+
+	def test_un_single_viejo_se_normaliza_al_guardar_en_un_parche(self):
+		campos = ("objetivo_efectividad", "presupuesto_analisis_seg", "max_turnos_contexto")
+		originales = {campo: frappe.db.get_single_value(SETTINGS, campo) for campo in campos}
+		for campo in campos:
+			frappe.db.set_single_value(SETTINGS, campo, 0)
+		frappe.clear_document_cache(SETTINGS, SETTINGS)
+		previo = frappe.flags.get("in_patch")
+		frappe.flags.in_patch = True
+		try:
+			s = frappe.get_doc(SETTINGS)
+			s.save(ignore_permissions=True)
+			frappe.clear_document_cache(SETTINGS, SETTINGS)
+			guardado = frappe.get_doc(SETTINGS)
+			self.assertEqual(guardado.objetivo_efectividad, 75)
+			self.assertEqual(int(guardado.presupuesto_analisis_seg), 240)
+			self.assertEqual(int(guardado.max_turnos_contexto), 3)
+		finally:
+			frappe.flags.in_patch = previo
+			for campo, valor in originales.items():
+				frappe.db.set_single_value(SETTINGS, campo, valor)
+			frappe.clear_document_cache(SETTINGS, SETTINGS)
 
 
 class TestExplainModos(ConfigMixin, FrappeTestCase):

@@ -71,7 +71,15 @@ los campos nuevos de `IA Mensaje`/`IA API Log`, las 4 Pages, los 2 Workspaces, e
 rol `Molduplastic IA User` con sus 7 permisos y las semillas (glosario,
 proveedores, sugerencias, evaluación e indicadores). El parche nuevo
 `sembrar_tokens_respuesta` deja `max_tokens_respuesta` en **4000** si estaba
-vacío o en el default viejo (2000); un valor puesto a mano se respeta.
+vacío o en el default viejo (2000); un valor puesto a mano se respeta. El último
+parche, `normalizar_configuracion_ia`, completa los valores de análisis que un
+Single viejo no tenía (objetivo, presupuesto, umbrales, límites de contexto):
+Frappe no aplica defaults a un Single que ya existía.
+
+Si `migrate` se quedó a medias con `El objetivo de efectividad debe estar entre 0
+y 100`, es exactamente eso: un Single viejo con `objetivo_efectividad` en 0. Esta
+versión lo corrige; vuelve a ejecutar `bench --site <site> migrate` y retoma desde
+el parche que falló.
 
 #### 3. Índices de `tabPieza` (obligatorio)
 

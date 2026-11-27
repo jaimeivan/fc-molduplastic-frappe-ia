@@ -33,11 +33,11 @@ def objetivo_efectividad():
 	"""Objetivo de efectividad (%) desde Molduplastic IA Settings (2026-11-10).
 
 	Es la única fuente: la constante de código se eliminó. Un entero se devuelve
-	como entero para que el prompt diga "75%" y no "75.0%".
+	como entero para que el prompt diga "75%" y no "75.0%". Si el campo quedó
+	sin sembrar (un Single viejo que no guardó los defaults), se usa 75 antes
+	de dejar al asistente sin poder armar el prompt.
 	"""
-	valor = frappe.get_cached_doc("Molduplastic IA Settings").objetivo_efectividad
-	if not valor:
-		frappe.throw("Falta el objetivo de efectividad en Molduplastic IA Settings.")
+	valor = frappe.get_cached_doc("Molduplastic IA Settings").objetivo_efectividad or 75
 	valor = float(valor)
 	return int(valor) if valor.is_integer() else valor
 
