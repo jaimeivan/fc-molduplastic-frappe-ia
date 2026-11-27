@@ -31,6 +31,7 @@ Decisión del dueño: el asistente mide lo mismo que los tableros (`VW_PIEZAS` /
 - `molduplastic_ia/doctype/`: `Molduplastic IA Settings` (Single, solo System Manager; con las tablas hijas `IA Proveedor` y `IA Sugerencias`), `IA API Log` (solo admin), `IA Conversacion` (+ hija `IA Mensaje`), `IA Reporte`.
 - `molduplastic_ia/page/asistente_ia/`: Page Desk `asistente-ia` en JS plano + `frappe.Chart` nativo (el Desk v15 **no expone `Vue` global**: una página con `Vue.createApp` queda en blanco). Sin build.
 - `molduplastic_ia/patches/`: `crear_rol_y_permisos_ia` (rol `Molduplastic IA User` + Custom DocPerms, no toca la otra app), `crear_workspace_ia`. Registrados en `patches.txt`.
+- `required_apps = ["fc_molduplastic_frappe_app"]` en `hooks.py` (2026-11-27): la app hermana define Pieza/Recoleccion/Taller y los catálogos. Solo se evalúa al instalar; no cambia el site ya instalado.
 - `seed_gnp_dev.py`: crea usuario `pruebas.gnp@molduplastic.test` + User Permission GNP. **Solo dev, nunca producción.**
 
 ## Comandos (desde `/home/frappe/frappe-bench`)
@@ -38,6 +39,9 @@ Decisión del dueño: el asistente mide lo mismo que los tableros (`VW_PIEZAS` /
 ```bash
 bench --site molduplastic.jarritohost.net migrate
 bench --site molduplastic.jarritohost.net run-tests --app fc_molduplastic_frappe_ia
+bench --site molduplastic.jarritohost.net mariadb < apps/fc_molduplastic_frappe_ia/scripts/indices_ia.sql
+                # crea/verifica los 12 índices de tabPieza; migrate NO los crea.
+                # Sin ellos el executor falla con ERROR 1176 (FORCE INDEX).
 bench restart   # obligatorio tras tocar hooks.py **y tras cualquier cambio en Python**:
                 # gunicorn/workers mantienen los módulos cargados en memoria; sin
                 # restart el site sigue ejecutando el código anterior (pasó el
@@ -128,7 +132,7 @@ Tests: los de esas instrucciones se borraron con ellas. `tests/test_validate_spe
 
 ## Rendimiento: índices de tabPieza
 
-**Índices analíticos (2026-11-17).** Con la base de fecha y el universo de BI se crearon cinco índices cubrientes; van fuera de `migrate` y hay que recrearlos si se reinstala la BD. Se crearon con `ALGORITHM=INPLACE, LOCK=NONE`:
+**Índices analíticos (2026-11-17).** Con la base de fecha y el universo de BI se crearon cinco índices cubrientes; van fuera de `migrate` y hay que recrearlos si se reinstala la BD. Desde el 2026-11-27 la lista completa está en **`scripts/indices_ia.sql`**: crea los 12 con `ALGORITHM=INPLACE, LOCK=NONE`, es re-ejecutable (consulta `information_schema`) y termina verificando que los 12 existan. Se ejecuta con `bench --site <site> mariadb < apps/fc_molduplastic_frappe_ia/scripts/indices_ia.sql`. Sin ellos el executor falla con `ERROR 1176` porque `FORCE INDEX` lleva el nombre fijo. Definición de cada uno:
 
 ```sql
 -- Base ingreso: efectividad, resumen, precios, por taller / parte / modelo
@@ -565,7 +569,7 @@ Verificado en Afirme, septiembre 2026: "piezas **por cada taller**" → `Piezas 
 
 ## Presupuesto de tokens y fallback
 
-`max_tokens_respuesta` está en **4000** (antes 2000). DeepSeek v4.1 flash gasta tokens razonando: con un spec largo se quedaba sin presupuesto, devolvía `content` vacío y la pregunta moría con "servicio no disponible" sin explicación. Cambios en `llm_factory.py`:
+`max_tokens_respuesta` está en **4000** (antes 2000) y desde el 2026-11-27 también es el **default del DocType** y hay parche `sembrar_tokens_respuesta` (solo sube si estaba vacío o en 2000; un valor del administrador se respeta). DeepSeek v4.1 flash gasta tokens razonando: con un spec largo se quedaba sin presupuesto, devolvía `content` vacío y la pregunta moría con "servicio no disponible" sin explicación. Cambios en `llm_factory.py`:
 
 - El `finish_reason == "length"` con respuesta vacía ahora dice "se agotó el presupuesto de tokens", no "devolvió texto vacío".
 - El parseo del JSON se movió **dentro** del `_llamar` del fallback: un JSON inválido o truncado cuenta como fallo de ese proveedor y pasa al siguiente, en vez de abortar la cadena entera.

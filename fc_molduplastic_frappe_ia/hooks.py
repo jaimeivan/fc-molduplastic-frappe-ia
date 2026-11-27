@@ -8,7 +8,10 @@ app_license = "mit"
 # Apps
 # ------------------
 
-# required_apps = []
+# El asistente consulta Pieza, Recoleccion, Taller y los catálogos (Aseguradora,
+# Marcas, Estatus, Taller-Plazas, Recolector-Talleres, Catalogo Datos), que
+# define la app hermana. Sin ella el site queda instalado pero sin datos.
+required_apps = ["fc_molduplastic_frappe_app"]
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [

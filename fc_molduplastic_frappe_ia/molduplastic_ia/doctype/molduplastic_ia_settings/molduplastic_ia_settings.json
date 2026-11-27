@@ -114,7 +114,8 @@
    "label": "Máx. preguntas por minuto y usuario"
   },
   {
-   "default": "2000",
+   "default": "4000",
+   "description": "Tope del texto que puede escribir el modelo. Con 2000 los specs largos se quedaban sin presupuesto y la respuesta llegaba vacía. El código nunca permite más de 4000.",
    "fieldname": "max_tokens_respuesta",
    "fieldtype": "Int",
    "label": "Máx. tokens de respuesta (solo HTTP)"
