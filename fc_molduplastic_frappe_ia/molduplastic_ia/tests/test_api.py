@@ -1,5 +1,6 @@
 """Tests del flujo ask() con LLM simulado (sin gastar API)."""
 
+from decimal import Decimal
 from unittest.mock import patch
 
 import frappe
@@ -75,7 +76,8 @@ class TestAsk(FrappeTestCase):
 			res = api.ask("efectividad por taller")
 		self.assertNotIn("|", res["respuesta"])
 		self.assertIn("Un comentario.", res["respuesta"])
-		self.assertIn("Intervalo 95%", res["columnas"])
+		self.assertIn("Efectividad", res["columnas"])
+		self.assertNotIn("Intervalo 95%", res["columnas"])
 		self.assertNotIn("Interanual", res["columnas"])
 
 	def test_sin_tablas_markdown(self):
@@ -196,6 +198,8 @@ class TestAsk(FrappeTestCase):
 		res = api.ask("dame piezas", universo="7")
 		self.assertTrue(res["ok"])
 		self.assertEqual(res["universo"], "6")
+		# El tenant no puede consultar otra: el turno sigue en la suya.
+		self.assertEqual(res["alcance_turno"], "")
 
 
 class TestMetricasDeEtapas(FrappeTestCase):
@@ -1338,13 +1342,10 @@ class TestTablaEfectividad(FrappeTestCase):
 				"Ingresadas",
 				"Recolectadas",
 				"Efectividad",
-				"Intervalo 95%",
 				"Objetivo",
 			],
 		)
-		self.assertEqual(
-			filas, [["SALTILLO", 105, 75, "71.4%", "—", "Por debajo"]]
-		)
+		self.assertEqual(filas, [["SALTILLO", 105, 75, "71.4%", "Por debajo"]])
 
 	def test_dos_dimensiones(self):
 		spec = {"group_by": ["region_pais", "id_plaza"]}
@@ -1352,8 +1353,7 @@ class TestTablaEfectividad(FrappeTestCase):
 		columnas, filas = api._tabla_efectividad(spec, porcentajes)
 		self.assertEqual(columnas[0], "Región / Plaza")
 		self.assertEqual(filas[0][:4], ["Norte / MTY", 24, 24, "100.0%"])
-		self.assertEqual(filas[0][4], "—")
-		self.assertEqual(filas[0][5], "")
+		self.assertEqual(filas[0][4], "")
 
 	def test_sin_porcentajes_no_hay_tabla(self):
 		self.assertIsNone(api._tabla_efectividad({"group_by": ["marca"]}, []))
@@ -1430,7 +1430,6 @@ class TestTablaEfectividad(FrappeTestCase):
 				"Ingresadas",
 				"Recolectadas",
 				"Efectividad",
-				"Intervalo 95%",
 				"Objetivo",
 			],
 		)
@@ -1587,13 +1586,56 @@ class TestEtiquetaAlcance(FrappeTestCase):
 	@patch.object(api, "explain", return_value=("Listo.", INFO))
 	@patch.object(api, "generate_spec", return_value=(SPEC_OK, INFO))
 	def test_admin_usa_la_aseguradora_que_nombra(self, mock_spec, mock_exp):
-		"""Si dice "de Afirme", se consulta Afirme aunque el universo sea GNP."""
+		"""Si dice "de Afirme", los datos son de Afirme y el universo no cambia."""
 		frappe.set_user("Administrator")
 		self.addCleanup(frappe.set_user, "Administrator")
 		res = api.ask("piezas de Afirme", universo="6")
-		self.assertEqual(res["universo"], "1")
+		self.assertEqual(res["universo"], "6")
+		self.assertEqual(res["alcance_turno"], "1")
+		self.assertEqual(
+			frappe.db.get_value("IA Conversacion", res["conversacion"], "universo"), "6"
+		)
+		# El modelo recibe el universo de los datos, no el del selector.
+		self.assertEqual(mock_exp.call_args.kwargs["universo_nombre"], "Afirme")
 		res2 = api.ask("piezas de GNP", universo="1")
+		self.assertEqual(res2["universo"], "1")
+		self.assertEqual(res2["alcance_turno"], "6")
+
+	@patch.object(api, "explain", return_value=("Listo.", INFO))
+	@patch.object(api, "generate_spec", return_value=(SPEC_OK, INFO))
+	def test_el_siguiente_turno_vuelve_al_universo_elegido(self, mock_spec, mock_exp):
+		"""La consulta puntual no arrastra el universo: el chat sigue en el suyo."""
+		frappe.set_user("Administrator")
+		self.addCleanup(frappe.set_user, "Administrator")
+		res = api.ask("piezas de Afirme", universo="6")
+		self.assertEqual(res["alcance_turno"], "1")
+		res2 = api.ask("¿y por taller?", conversacion=res["conversacion"])
 		self.assertEqual(res2["universo"], "6")
+		self.assertEqual(res2["alcance_turno"], "6")
+		self.assertEqual(
+			frappe.db.get_value("IA Conversacion", res2["conversacion"], "universo"), "6"
+		)
+
+	@patch.object(api, "explain", return_value=("Listo.", INFO))
+	@patch.object(api, "generate_spec", return_value=(SPEC_OK, INFO))
+	def test_admin_en_todas_conserva_todas_y_consulta_la_que_nombra(
+		self, mock_spec, mock_exp
+	):
+		frappe.set_user("Administrator")
+		self.addCleanup(frappe.set_user, "Administrator")
+		res = api.ask("piezas de Afirme", universo="TODAS")
+		self.assertEqual(res["universo"], "TODAS")
+		self.assertEqual(res["alcance_turno"], "1")
+		self.assertNotIn("Solo puedo consultar", res["respuesta"])
+
+	@patch.object(api, "explain", return_value=("Listo.", INFO))
+	@patch.object(api, "generate_spec", return_value=(SPEC_OK, INFO))
+	def test_el_admin_no_lleva_el_aviso_de_alcance(self, mock_spec, mock_exp):
+		"""El aviso es para el usuario de tenant, no para el administrador."""
+		frappe.set_user("Administrator")
+		self.addCleanup(frappe.set_user, "Administrator")
+		res = api.ask("compara GNP con Afirme", universo="6")
+		self.assertNotIn("Solo puedo consultar", res["respuesta"])
 
 	def test_admin_todas_no_lleva_etiqueta(self):
 		self.assertFalse(api._nombra_aseguradora_ajena("efectividad de HDI", "TODAS"))
@@ -1709,6 +1751,37 @@ class TestRedaccionesDeEfectividad(FrappeTestCase):
 			"¿llegamos a la meta de septiembre?",
 		):
 			self.assertTrue(api._pide_efectividad(pregunta), pregunta)
+
+	def test_rendimiento_es_efectividad(self):
+		for pregunta in (
+			"rendimiento de septiembre",
+			"¿cuál es el rendimiento por taller?",
+			"¿qué taller tiene mayor rendimiento?",
+			"muestra el mapa de rendimiento por región",
+			"estados con mucho volumen y bajo rendimiento",
+		):
+			self.assertTrue(api._pide_efectividad(pregunta), pregunta)
+		self.assertTrue(api._es_top_recoleccion("¿qué taller tiene mayor rendimiento?"))
+		self.assertTrue(api._pide_mapa_efectividad("muestra el mapa de rendimiento"))
+		self.assertEqual(
+			api._pide_mezcla_volumen_efectividad("estados con mucho volumen y bajo rendimiento"),
+			(True, False),
+		)
+		self.assertFalse(api._pide_crecimiento_periodos("evolución del rendimiento por trimestre"))
+		self.assertFalse(api._pide_recolectadas("rendimiento de septiembre"))
+
+	def test_completa_el_spec_de_rendimiento(self):
+		spec = {
+			"doctype": "Pieza",
+			"fields": [],
+			"filters": {"fecha_hora_carga": ["between", "2026-09-01 00:00:00", "2026-09-30 23:59:59"]},
+			"aggregations": [{"func": "count", "field": "*", "alias": "total"}],
+			"group_by": ["taller_asignado"],
+		}
+		out = api._completar_efectividad(spec, "rendimiento por taller")
+		self.assertEqual(
+			[a["alias"] for a in out["aggregations"]], list(api.ALIAS_EFECTIVIDAD)
+		)
 
 	def test_no_confunde_el_resumen_ni_los_pendientes(self):
 		for pregunta in (
@@ -2140,7 +2213,11 @@ class TestPeriodoDatos(FrappeTestCase):
 	def test_admin_sin_universo_no_anuncia_nada(self):
 		llamadas = []
 		with self._sql(llamadas):
-			self.assertFalse(api.periodo_datos()["mostrar"])
+			res = api.periodo_datos()
+		self.assertFalse(res["mostrar"])
+		# El chat usa esta bandera para pedir el universo antes de consultar
+		# (sin loader de "Analizando la pregunta…").
+		self.assertTrue(res["admin"])
 		self.assertEqual(llamadas, [])
 
 	def test_usuario_de_aseguradora_ve_su_rango(self):
@@ -2150,6 +2227,8 @@ class TestPeriodoDatos(FrappeTestCase):
 			res = api.periodo_datos()
 		self.assertTrue(res["mostrar"])
 		self.assertEqual(res["universo"], "GNP")
+		# Un usuario de tenant no elige universo: el chat no se lo pide.
+		self.assertFalse(res["admin"])
 		self.assertEqual(res["desde_texto"], "13 de mayo de 2025")
 		self.assertEqual(res["hasta_texto"], "2 de octubre de 2026")
 		self.assertEqual(llamadas[0][1], ["6"])
@@ -4030,12 +4109,11 @@ class TestMasSeRecolectan(FrappeTestCase):
 				"Ingresadas",
 				"Recolectadas",
 				"Efectividad",
-				"Intervalo 95%",
 				"Objetivo",
 			],
 		)
 		self.assertEqual(
-			filas, [["CELLINI", 228, 385, "168.9%", "—", "Por encima"]]
+			filas, [["CELLINI", 228, 385, "168.9%", "Por encima"]]
 		)
 
 
@@ -4706,7 +4784,6 @@ class TestTablaConMasDeUnaFila(FrappeTestCase):
 				"Ingresadas",
 				"Recolectadas",
 				"Efectividad",
-				"Intervalo 95%",
 				"Objetivo",
 			],
 		)
@@ -4859,6 +4936,64 @@ class TestParteEnPlural(FrappeTestCase):
 			self._spec(), "muestra los tipos de piezas de la marca Tesla en septiembre"
 		)
 		self.assertEqual(out["group_by"], ["parte_pieza"])
+
+
+class TestFormatoDeNumeros(FrappeTestCase):
+	"""Los números de la tabla llevan separador de miles (dueño, 2026-11-27)."""
+
+	def test_enteros_con_coma(self):
+		self.assertEqual(api._numero_con_miles(5434), "5,434")
+		self.assertEqual(api._numero_con_miles(0), "0")
+		self.assertEqual(api._numero_con_miles(999), "999")
+		self.assertEqual(api._numero_con_miles(-1234), "-1,234")
+		self.assertEqual(api._numero_con_miles(1234567), "1,234,567")
+
+	def test_decimales_conservan_el_punto(self):
+		self.assertEqual(api._numero_con_miles(3.47), "3.47")
+		self.assertEqual(api._numero_con_miles(1234.5), "1,234.5")
+		self.assertEqual(api._numero_con_miles(Decimal("1234.50")), "1,234.50")
+
+	def test_no_toca_texto_ni_dinero(self):
+		for valor in ("$1,234.00", "29.6%", "—", "2026-09", None, True):
+			self.assertEqual(api._numero_con_miles(valor), valor)
+
+	def test_la_tabla_formatea_solo_las_medidas(self):
+		tabla = {
+			"columnas": ["Modelo", "Siniestro", "Piezas"],
+			"filas": [[2024, "AFMX26967-25-2", 5434]],
+		}
+		out = api._tabla_con_miles(tabla)
+		self.assertEqual(out["filas"], [[2024, "AFMX26967-25-2", "5,434"]])
+
+	def test_la_tabla_respeta_lo_ya_formateado(self):
+		tabla = {
+			"columnas": ["Marca", "Valor", "Efectividad"],
+			"filas": [["Nissan", "$3,690,040.32", "87.0%"]],
+		}
+		self.assertEqual(api._tabla_con_miles(tabla)["filas"], tabla["filas"])
+
+	def test_sin_columnas_o_sin_filas_no_cambia_nada(self):
+		for tabla in (None, {}, {"columnas": None, "filas": None}):
+			self.assertEqual(api._tabla_con_miles(tabla), tabla)
+
+	@patch.object(api, "explain", return_value=("Listo.", INFO))
+	@patch.object(api, "generate_spec", return_value=(SPEC_OK, INFO))
+	@patch.object(
+		api,
+		"ejecutar",
+		return_value={
+			"columnas": ["taller_asignado", "piezas"],
+			"filas": [["CELLINI", 5434], ["CRASH", 1234]],
+			"cobertura": {},
+		},
+	)
+	def test_la_respuesta_del_chat_lleva_los_numeros_con_coma(
+		self, mock_ejecutar, mock_spec, mock_exp
+	):
+		frappe.set_user("Administrator")
+		self.addCleanup(frappe.set_user, "Administrator")
+		res = api.ask("piezas por taller", universo="6")
+		self.assertEqual(res["filas"], [["CELLINI", "5,434"], ["CRASH", "1,234"]])
 
 
 class TestFormatoDePrecios(FrappeTestCase):
@@ -5832,7 +5967,6 @@ class TestMapaDeEfectividad(FrappeTestCase):
 				"Ingresadas",
 				"Recolectadas",
 				"Efectividad",
-				"Intervalo 95%",
 				"Objetivo",
 				"Mapa",
 			],

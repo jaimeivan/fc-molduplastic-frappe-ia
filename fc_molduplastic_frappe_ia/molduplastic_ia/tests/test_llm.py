@@ -324,6 +324,11 @@ class TestPromptExplain(FrappeTestCase):
 		)
 		self.assertEqual(datos["universo"], "GNP")
 
+	def test_prompt_pide_separador_de_miles(self):
+		self.assertIn("separador de miles", F.SYSTEM_EXPLAIN)
+		self.assertIn("sin coma (2024)", F.SYSTEM_EXPLAIN)
+		self.assertIn("separador de miles", F.SYSTEM_EXPLAIN_ANALITICO)
+
 	def test_grupos_sin_ingresadas_no_aparecen_en_la_tabla(self):
 		"""Un grupo que solo tiene rezagadas daría 0.0% por construcción."""
 		spec = {
@@ -447,7 +452,7 @@ class TestPromptExplain(FrappeTestCase):
 	def test_prompt_pide_la_columna_objetivo(self):
 		self.assertIn('"Objetivo"', F.SYSTEM_EXPLAIN)
 		self.assertIn("la app la pinta", F.SYSTEM_EXPLAIN)
-		self.assertIn('"Intervalo 95%"', F.SYSTEM_EXPLAIN)
+		self.assertNotIn('"Intervalo 95%"', F.SYSTEM_EXPLAIN)
 
 	def test_recorta_despues_de_ordenar(self):
 		# El LIMIT viejo cortaba en MySQL antes de ordenar: el mejor grupo podía
@@ -776,7 +781,7 @@ class TestPorcentajes(FrappeTestCase):
 	def test_prompt_usa_recolectadas_en_la_tabla(self):
 		self.assertIn('"recuperadas" es la suma de dos categorías', F.SYSTEM_EXPLAIN)
 		self.assertIn('La columna se llama "Recolectadas"', F.SYSTEM_EXPLAIN)
-		self.assertIn('"Intervalo 95%"', F.SYSTEM_EXPLAIN)
+		self.assertNotIn('"Intervalo 95%"', F.SYSTEM_EXPLAIN)
 		self.assertNotIn('"Recuperadas"', F.SYSTEM_EXPLAIN)
 
 	def test_las_preguntas_que_arma_el_codigo_no_usan_el_modelo_pro(self):
@@ -1019,8 +1024,12 @@ class TestResumenDetalle(FrappeTestCase):
 class TestPromptRedaccionesDeEfectividad(FrappeTestCase):
 	def test_prompt_lista_las_otras_redacciones(self):
 		self.assertIn("Toda pregunta que mida qué parte de las piezas se recolectó", F.SYSTEM_SPEC)
-		self.assertIn('"tasa de recolección", "nivel de', F.SYSTEM_SPEC)
+		self.assertIn('"rendimiento" (sinónimo), "tasa de', F.SYSTEM_SPEC)
+		self.assertIn("nivel de recolección", F.SYSTEM_SPEC)
 		self.assertIn("numerador son SIEMPRE las piezas recolectadas", F.SYSTEM_SPEC)
+
+	def test_prompt_incluye_rendimiento_como_efectividad(self):
+		self.assertIn('"rendimiento" (sinónimo)', F.SYSTEM_SPEC)
 
 
 class TestPromptRangoDeDosMeses(FrappeTestCase):

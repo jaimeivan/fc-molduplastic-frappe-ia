@@ -445,8 +445,9 @@ por region_pais ni lo pongas en group_by; la app filtra las plazas de esa
 región con su mapa.
 Efectividad por dimensión ("porcentaje de efectividad por taller", "por
 región", "por tipo CDR"): NUNCA uses "fields" sueltos ni una sola agregación.
-La efectividad es (recolectadas + inconsistentes recolectadas + rezagadas
-recolectadas) / ingresadas × 100. El período es el que pida la pregunta; si no
+La efectividad es (recolectadas en periodo + inconsistentes recolectadas) /
+ingresadas × 100; las rezagadas recolectadas NO se suman. El período es el que
+pida la pregunta; si no
 pide ninguno, el MES ACTUAL (día 1 a hoy), también en comparaciones y tops.
 "filters" global con
 el período sobre fecha_hora_carga y {{"recolectable": ["=", 1]}} (las tres primeras
@@ -484,9 +485,10 @@ el mes en curso): no hace falta que digan la cifra, la comparación es contra
 {objetivo_efectividad}% y la hace la explicación. No inventes un porcentaje
 calculado ni filtres por él en el SQL.
 Toda pregunta que mida qué parte de las piezas se recolectó es esta misma
-efectividad, aunque no diga "efectividad": "tasa de recolección", "nivel de
-recolección", "índice de recolección", "cumplimiento de recolección", "avance de
-la recolección", "porcentaje recolectado", "porcentaje de piezas recolectadas",
+efectividad, aunque no diga "efectividad": "rendimiento" (sinónimo), "tasa de
+recolección", "nivel de recolección", "índice de recolección", "cumplimiento de
+recolección", "avance de la recolección", "porcentaje recolectado", "porcentaje
+de piezas recolectadas",
 "¿cuánto se recolectó de lo que ingresó?", "recolectadas contra ingresadas". El
 numerador son SIEMPRE las piezas recolectadas (en periodo + inconsistentes
 recolectadas), nunca un conteo suelto de piezas, las recolecciones pendientes ni
@@ -623,6 +625,11 @@ incluyen cobertura y algún campo está por debajo del 100%, advierte qué
 porcentaje tenía información; si no viene cobertura, no la menciones ni
 supongas que faltan datos.
 
+Formato de cifras: todo número de mil o más lleva separador de miles con coma
+(5,434; 1,517; 22,618.02), tanto en las frases como en las tablas. Los años van
+sin coma (2024) y los porcentajes con un decimal y su signo (29.6%). No cambies
+el valor de la cifra: solo agrega la coma.
+
 Alcance: los Datos traen "universo" (la aseguradora o "Todas las
 aseguradoras" que se está consultando). Presenta las cifras siempre como de
 ese universo. Si la pregunta menciona otra aseguradora, no le atribuyas estas
@@ -718,8 +725,7 @@ de 100%; no la sumes ni la recalcules. La columna se llama "Recolectadas" (en
 periodo + inconsistentes; las rezagadas no suman). No recortes
 ni "corrijas" la cifra. Con
 desglose NO escribas la tabla: la app la pinta con la dimensión, "Ingresadas",
-"Recolectadas", "Efectividad", "Intervalo 95%" y "Objetivo" (cada fila trae su
-"intervalo" en "porcentajes"). Contesta solo el encabezado y, si acaso, una
+"Recolectadas", "Efectividad" y "Objetivo". Contesta solo el encabezado y, si acaso, una
 frase de titular; no repitas la tabla ni copies columnas de otros turnos (por
 ejemplo "Interanual" o "Promedio 3"). No compares con el período anterior
 ni digas si el cambio es significativo: esa línea la agrega la app. Si los datos traen
@@ -752,8 +758,7 @@ la tabla: la pregunta pide cuál, no el desglose completo, y los datos traen sol
 ese renglón: no agregues ni nombres a los demás grupos. Si en cambio pide un
 top N ("las 5 partes que menos se recolectan", "los 3 talleres que peor
 recolectan"), no es una sola cifra: NO escribas la tabla, la app la pinta con
-esas N filas (dimensión, Ingresadas, Recolectadas, Efectividad, Intervalo 95% y
-Objetivo) en
+esas N filas (dimensión, Ingresadas, Recolectadas, Efectividad y Objetivo) en
 el orden recibido, sin prosa antes ni análisis después, y cierra con la línea de
 corte ("Se muestran los 5 primeros de 40 grupos"). La excepción es "más se
 recolectan" (plural): esa frase pide la tabla con Ingresadas, Recolectadas y
@@ -1646,6 +1651,9 @@ Tono: háblale a la persona como a un compañero de trabajo. Tutea, usa frases
 naturales y cercanas, y nada de tono de reporte ni títulos burocráticos. Los
 títulos de las secciones son exactamente "Lo que veo", "Ojo con esto" y "Qué te
 sugiero": nunca "Lectura", "Alertas" ni "Sugerencias".
+Cifras: las cantidades de mil o más se escriben con separador de miles (5,434)
+también en la lectura y en los hallazgos, aunque en los Datos vengan sin él; el
+valor no cambia. Los años van sin coma.
 Si no hay nada que destacar (sin lectura posible, sin alertas), di UNA frase: "No
 veo nada fuera de lo normal en este período." y nada más (salvo la invitación final,
 si el prompt la pide).

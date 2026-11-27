@@ -6,6 +6,7 @@ import math
 import re
 import time
 import unicodedata
+from decimal import Decimal
 
 import frappe
 
@@ -292,6 +293,7 @@ def _pide_efectividad(pregunta):
 		frase in t
 		for frase in (
 			"efectividad",
+			"rendimiento",
 			"porcentaje de recoleccion",
 			"porcentaje recolectado",
 			"porcentaje de recolectadas",
@@ -337,8 +339,8 @@ def _es_top_recoleccion(pregunta):
 		re.search(
 			r"(?:menos|mas|peor|mejor)\s+(?:se\s+)?recolect"
 			r"|recolect\w*\s+(?:menos|mas|peor|mejor)"
-			r"|(?:menor|mayor|peor|mejor)\s+(?:efectividad|recoleccion)"
-			r"|efectividad\s+mas\s+(?:baja|alta)",
+			r"|(?:menor|mayor|peor|mejor)\s+(?:efectividad|recoleccion|rendimiento)"
+			r"|(?:efectividad|rendimiento)\s+mas\s+(?:baja|alta|bajo|alto)",
 			_sin_acentos(pregunta),
 		)
 	)
@@ -358,7 +360,7 @@ def _pide_recolectan_mas(pregunta):
 			r"\bmas\s+(?:se\s+)?recolect|recolect\w*\s+mas\b(?!\s+de\s+\d)"
 			# "región con mayor recolección de piezas" es la misma pregunta
 			# (dueño, 2026-11-07): pide las cuatro columnas, no una cifra suelta.
-			r"|(?:mayor|mas)\s+(?:volumen\s+de\s+)?recoleccion",
+			r"|(?:mayor|mas)\s+(?:volumen\s+de\s+)?(?:recoleccion|rendimiento)",
 			_sin_acentos(pregunta or ""),
 		)
 	)
@@ -1262,7 +1264,12 @@ def _aggs_efectividad(desde, hasta):
 
 def _pide_mapa_efectividad(pregunta):
 	"""“Muestra el mapa de efectividad”: tabla de efectividad con semáforo."""
-	return bool(re.search(r"\bmapa\s+(?:de\s+)?(?:la\s+)?efectividad\b", _sin_acentos(pregunta or "")))
+	return bool(
+		re.search(
+			r"\bmapa\s+(?:de\s+)?(?:la\s+)?(?:efectividad|rendimiento)\b",
+			_sin_acentos(pregunta or ""),
+		)
+	)
 
 
 def _circulo_de_efectividad(pct):
@@ -1361,6 +1368,12 @@ PALABRAS_EFECTIVIDAD_BAJA = (
 	"recolecta poco",
 	"recolectan poco",
 	"poco se recolecta",
+	"bajo rendimiento",
+	"rendimiento bajo",
+	"pobre rendimiento",
+	"rendimiento pobre",
+	"menor rendimiento",
+	"rendimiento menor",
 )
 PALABRAS_EFECTIVIDAD_ALTA = (
 	"alta efectividad",
@@ -1371,6 +1384,12 @@ PALABRAS_EFECTIVIDAD_ALTA = (
 	"recoleccion alta",
 	"mejor efectividad",
 	"efectividad mayor",
+	"alto rendimiento",
+	"rendimiento alto",
+	"buen rendimiento",
+	"rendimiento bueno",
+	"mejor rendimiento",
+	"rendimiento mayor",
 	"alto porcentaje",
 	"porcentaje alto",
 	"alta tasa",
@@ -3470,7 +3489,15 @@ def _pide_crecimiento_dimension(pregunta):
 		return False
 	if any(
 		p in texto
-		for p in ("efectividad", "porcentaje", "tasa de", "cumplimiento", "meta de", "objetivo")
+		for p in (
+			"efectividad",
+			"rendimiento",
+			"porcentaje",
+			"tasa de",
+			"cumplimiento",
+			"meta de",
+			"objetivo",
+		)
 	):
 		return False
 	if any(p in texto for p in ("recolect", "recuperad")):
@@ -3667,7 +3694,15 @@ def _pide_crecimiento_periodos(pregunta):
 	# La efectividad explícita ("efectividad entre trimestres") no es una serie.
 	if any(
 		p in texto
-		for p in ("efectividad", "porcentaje", "tasa de", "cumplimiento", "meta de", "objetivo")
+		for p in (
+			"efectividad",
+			"rendimiento",
+			"porcentaje",
+			"tasa de",
+			"cumplimiento",
+			"meta de",
+			"objetivo",
+		)
 	):
 		return False
 	# La serie de siniestros por mes (sin trimestres) ya tiene su camino.
@@ -7875,6 +7910,11 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		return {"ok": False, "mensaje": "Límite de preguntas por minuto alcanzado. Intenta en un momento."}
 
 	propias = get_user_aseguradoras(user)
+	# Alcance real de la consulta cuando un administrador pregunta por otra
+	# aseguradora: se responde con la que nombra, pero el universo de la
+	# conversación (y el selector del chat) no se toca. Cambiarlo es decisión del
+	# Administrador desde el selector (dueño, 2026-11-26).
+	alcance_pregunta = None
 	if propias is None:
 		# Administrador: el universo se elige por conversación (o por llamada).
 		if not universo and conversacion and frappe.db.exists("IA Conversacion", conversacion):
@@ -7882,15 +7922,19 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 				universo = frappe.get_doc("IA Conversacion", conversacion).universo or ""
 			except frappe.PermissionError:
 				frappe.throw("No tienes acceso a esta conversación.", frappe.PermissionError)
-		# Si la pregunta nombra una aseguradora, manda esa: "te dije Afirme, no
-		# busques en otros universos" (dueño, 2026-11-07). Antes el admin seguía
-		# consultando el universo que tenía seleccionado y respondía con cifras
-		# de otra aseguradora (con el aviso de alcance, pero cifras ajenas).
+		# Si la pregunta nombra una aseguradora, esa manda para esta consulta
+		# ("te dije Afirme, no busques en otros universos", dueño 2026-11-07).
+		# Si todavía no hay universo (primera pregunta de un chat nuevo), la
+		# mención es la elección inicial; si ya hay uno, solo cambia el alcance
+		# de este turno y el selector se queda como estaba.
 		mencionadas = _aseguradoras_mencionadas(pregunta)
 		if len(mencionadas) == 1:
 			elegida = next(iter(mencionadas))
 			if elegida == "TODAS" or frappe.db.exists("Aseguradora", elegida):
-				universo = elegida
+				if universo:
+					alcance_pregunta = elegida
+				else:
+					universo = elegida
 		if not universo:
 			return {
 				"ok": True,
@@ -7901,11 +7945,11 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 				"conversacion": conversacion,
 			}
 		try:
-			_alcance_efectivo(user, universo)
+			_alcance_efectivo(user, alcance_pregunta or universo)
 		except frappe.PermissionError as e:
 			return {"ok": False, "mensaje": str(e)}
-		alcance = universo
-		aseguradora_log = universo if universo != "TODAS" else ""
+		alcance = alcance_pregunta or universo
+		aseguradora_log = alcance if alcance != "TODAS" else ""
 	else:
 		if not propias:
 			return {
@@ -7915,6 +7959,11 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		alcance = None  # sus propias aseguradoras (se ignora `universo`)
 		universo = propias[0]
 		aseguradora_log = propias[0]
+	# `universo` es el del chat (lo que devuelve la respuesta y pinta el
+	# selector); `alcance` es el de los datos de este turno. `universo_turno` es
+	# el que se audita por mensaje cuando los dos difieren.
+	universo_turno = alcance or universo
+	aseguradora_conversacion = universo if universo != "TODAS" else ""
 	consulta_id = frappe.generate_hash(length=10)
 	# Trazabilidad: si la pregunta vino de un botón de sugerencia, se valida el
 	# id del set ofrecido en el turno anterior (el modo efectivo lo pone el
@@ -7945,10 +7994,10 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	categoria = _pide_dato_sentible(pregunta)
 	if categoria:
 		_log_llamada({}, "generate_spec", SENSIBLE, consulta_id, user, aseguradora_log, categoria)
-		doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
+		doc, _ = _get_conversacion(conversacion, user, aseguradora_conversacion, universo)
 		mensaje_id = _guardar_mensajes(
 			doc, pregunta, MENSAJE_SENSIBLE, None, None, None,
-			primera=not conversacion, universo=universo, consulta_id=consulta_id,
+			primera=not conversacion, universo=universo_turno, consulta_id=consulta_id,
 			alcance_id=alcance or "",
 		)
 		return {
@@ -8059,14 +8108,15 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		# Si la pregunta nombraba otra aseguradora, el aviso de alcance va también
 		# aquí: "fuera de alcance" a secas no le dice al usuario qué universo sí
 		# se consulta, y deja la puerta abierta a reintentar con otra redacción.
+		# Un administrador no lleva el aviso: él sí puede consultar cualquiera.
 		mensaje = MENSAJE_FUERA_DE_ALCANCE
-		etiqueta = _etiqueta_alcance(pregunta, universo)
+		etiqueta = _etiqueta_alcance(pregunta, universo_turno) if propias is not None else ""
 		if etiqueta:
 			mensaje = f"{mensaje}\n\n{etiqueta}"
-		doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
+		doc, _ = _get_conversacion(conversacion, user, aseguradora_conversacion, universo)
 		mensaje_id = _guardar_mensajes(
 			doc, pregunta, mensaje, None, None, None,
-			primera=not conversacion, universo=universo, consulta_id=consulta_id,
+			primera=not conversacion, universo=universo_turno, consulta_id=consulta_id,
 			alcance_id=alcance or "",
 		)
 		return {
@@ -8107,10 +8157,10 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 			info, "generate_spec", "Respuesta directa", consulta_id, user, aseguradora_log,
 			historial=historial,
 		)
-		doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
+		doc, _ = _get_conversacion(conversacion, user, aseguradora_conversacion, universo)
 		mensaje_id = _guardar_mensajes(
 			doc, pregunta, texto, spec, None, None,
-			primera=not conversacion, universo=universo, consulta_id=consulta_id,
+			primera=not conversacion, universo=universo_turno, consulta_id=consulta_id,
 			alcance_id=alcance or "",
 		)
 		return {
@@ -8266,7 +8316,7 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	else:
 		argumentos = dict(
 			historial=historial,
-			universo_nombre=_nombre_aseguradora(universo),
+			universo_nombre=_nombre_aseguradora(universo_turno),
 			periodo_texto=_texto_periodo(pregunta, spec),
 			titulo_texto=_titulo_respuesta_para(spec, pregunta_det),
 		)
@@ -8281,7 +8331,7 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 			try:
 				_marcar_progreso(progreso_id, "analisis")
 				pack = _analisis_completo(
-					spec, resultado, universo, user, alcance, presupuesto,
+					spec, resultado, universo_turno, user, alcance, presupuesto,
 					registro=registro_complementaria,
 				)
 				# Las sugerencias configuradas (Playbook/C) viajan al prompt para
@@ -8942,7 +8992,8 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	# Etiqueta de alcance impuesta por el servidor: si la pregunta nombra otra
 	# aseguradora, la respuesta lo dice aunque el modelo haya redactado otra
 	# cosa. No se nombra a la otra aseguradora (no se confirma su existencia).
-	etiqueta = _etiqueta_alcance(pregunta, universo)
+	# Solo aplica a usuarios de tenant: el administrador consulta cualquiera.
+	etiqueta = _etiqueta_alcance(pregunta, universo_turno) if propias is not None else ""
 	if etiqueta and _texto_normalizado(etiqueta) not in _texto_normalizado(explicacion):
 		explicacion = _con_linea_antes_del_analisis(explicacion, etiqueta)
 	if nota_analisis:
@@ -8967,6 +9018,9 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	mostrar = _tabla_para_chat(spec, resultado, porcentajes, info_exp.get("datos"))
 	if tabla_comparativa is not None:
 		mostrar = tabla_comparativa
+	# Los números de la tabla llevan separador de miles (dueño, 2026-11-27):
+	# 5,434 en vez de 5434. El dinero ya viene formateado con "$".
+	mostrar = _tabla_con_miles(mostrar)
 	rango_consultado = _rango_del_spec(spec)
 	sugeridas, origen_sugerencias = _sugerencias_finales(
 		pack, modo_pedido, analisis_omitido, modelo_sugerencias
@@ -8974,10 +9028,10 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 	sugerencias_id_final = (
 		_sugerencias_id(origen_sugerencias, sugeridas) if sugeridas else ""
 	)
-	doc, _ = _get_conversacion(conversacion, user, aseguradora_log, universo)
+	doc, _ = _get_conversacion(conversacion, user, aseguradora_conversacion, universo)
 	mensaje_id = _guardar_mensajes(
 		doc, pregunta, explicacion, spec, mostrar, resultado["cobertura"],
-		primera=not conversacion, universo=universo,
+		primera=not conversacion, universo=universo_turno,
 		origen=origen_info,
 		sugerencias=sugeridas,
 		sugerencias_modo=origen_sugerencias,
@@ -9019,6 +9073,11 @@ def ask(pregunta, conversacion=None, universo=None, periodo=None, desde=None, ha
 		"conversacion": doc.name,
 		"universo": universo,
 		"universo_nombre": _nombre_aseguradora(universo),
+		# Alcance real de los datos de este turno ("" = las aseguradoras del
+		# usuario). Difiere de "universo" cuando un administrador pregunta por
+		# otra aseguradora: el selector del chat no cambia, pero el reporte
+		# guardado sí se etiqueta con el alcance consultado.
+		"alcance_turno": alcance or "",
 		"periodo": "este_anio" if ajuste_promedio else periodo,
 		# Fila de IA Mensaje de esta respuesta: el chat la usa para calificarla.
 		"mensaje_id": mensaje_id,
@@ -9074,9 +9133,9 @@ def _tabla_efectividad(spec, porcentajes):
 	"""Tabla de presentación de la efectividad, sin los alias internos.
 
 	El resultado crudo trae `total`, `recolectadas`, `inconsistentes_recolectadas`
-	y `rezagadas_recolectadas`; en el chat van la dimensión, las cuatro columnas
-	del criterio y el intervalo de confianza 95 % (Wilson) de la proporción
-	(2026-11-21). El modelo no calcula nada de esto.
+	y `rezagadas_recolectadas`; en el chat van la dimensión y las cuatro columnas
+	del criterio. El intervalo de Wilson se calcula (para la línea de veredicto)
+	pero no se pinta como columna (dueño, 2026-11-25). El modelo no calcula nada.
 	"""
 	if not porcentajes:
 		return None
@@ -9087,7 +9146,7 @@ def _tabla_efectividad(spec, porcentajes):
 	con_dimension = bool(dimensiones)
 	columnas = (
 		([" / ".join(dimensiones)] if con_dimension else [])
-		+ ["Ingresadas", "Recolectadas", "Efectividad", "Intervalo 95%", "Objetivo"]
+		+ ["Ingresadas", "Recolectadas", "Efectividad", "Objetivo"]
 	)
 	filas = [
 		(
@@ -9096,7 +9155,6 @@ def _tabla_efectividad(spec, porcentajes):
 				p.get("total") or 0,
 				p.get("recuperadas") or 0,
 				f"{p.get('pct') or 0:.1f}%",
-				p.get("intervalo") or "—",
 				p.get("vs_objetivo") or "",
 			]
 		)
@@ -9341,6 +9399,65 @@ def _formatear_dinero(spec, resultado, filas):
 	return salida
 
 
+# Columnas cuyos números son etiquetas, no medidas: el año del modelo y los
+# identificadores. Se comparan sin acentos y en minúsculas.
+COLUMNAS_SIN_SEPARADOR = {
+	"modelo",
+	"ano",
+	"ano modelo",
+	"siniestro",
+	"id",
+	"id plaza",
+	"id taller",
+	"id recoleccion",
+	"telefono",
+	"cp",
+	"codigo postal",
+}
+
+
+def _numero_con_miles(valor):
+	"""1234 → "1,234"; 1234.5 → "1,234.5". Lo que no es número se queda igual."""
+	if isinstance(valor, bool) or not isinstance(valor, (int, float, Decimal)):
+		return valor
+	texto = format(valor, "f") if isinstance(valor, Decimal) else str(valor)
+	if "e" in texto.lower():
+		return valor
+	entero, _, decimales = texto.partition(".")
+	signo = ""
+	if entero.startswith("-"):
+		signo, entero = "-", entero[1:]
+	if not entero.isdigit():
+		return valor
+	return signo + f"{int(entero):,}" + (f".{decimales}" if decimales else "")
+
+
+def _tabla_con_miles(tabla):
+	"""Separador de miles en los números de la tabla del chat (dueño, 2026-11-27).
+
+	5,434 en vez de 5434. No toca los años del modelo ni los identificadores
+	(columnas "Modelo", "Siniestro", "ID"...) y deja igual lo que ya viene
+	formateado ("$1,234.56", "29.6%", "—", fechas).
+	"""
+	if not tabla:
+		return tabla
+	filas = tabla.get("filas")
+	columnas = tabla.get("columnas") or []
+	if not filas or not columnas:
+		return tabla
+	etiquetas = [_sin_acentos(str(c)).strip().lower() for c in columnas]
+	salida = []
+	for fila in filas:
+		nueva = []
+		for i, valor in enumerate(fila):
+			if i < len(etiquetas) and etiquetas[i] in COLUMNAS_SIN_SEPARADOR:
+				nueva.append(valor)
+			else:
+				nueva.append(_numero_con_miles(valor))
+		salida.append(nueva)
+	return {**tabla, "filas": salida}
+
+
 def _formatear_pivote_dinero(filas):
 	"""Formatea las celdas de un cruce de precios ("$1,234.56")."""
 	salida = []
@@ -9546,18 +9663,24 @@ def periodo_datos(universo=None):
 	if user == "Guest":
 		frappe.throw("Debes iniciar sesión.", frappe.PermissionError)
 	propias = get_user_aseguradoras(user)
+	es_admin = propias is None
 	if propias is None:
 		# Administrador: solo hay rango cuando ya eligió un universo. Antes de
-		# elegirlo la barra se queda oculta (no se anuncia el global).
+		# elegirlo la barra se queda oculta (no se anuncia el global). El chat usa
+		# `admin` para pedir la aseguradora antes de consultar (2026-11-27).
 		if not universo:
-			return {"mostrar": False}
+			return {"mostrar": False, "admin": True}
 		try:
 			_alcance_efectivo(user, universo)
 		except frappe.PermissionError as e:
-			return {"mostrar": False, "mensaje": str(e)}
+			return {"mostrar": False, "mensaje": str(e), "admin": True}
 		alcance = universo
 	elif not propias:
-		return {"mostrar": False, "mensaje": "Tu usuario no tiene una aseguradora asignada."}
+		return {
+			"mostrar": False,
+			"mensaje": "Tu usuario no tiene una aseguradora asignada.",
+			"admin": False,
+		}
 	else:
 		alcance = None
 	nombre = _nombre_aseguradora(alcance or (propias[0] if propias else ""))
@@ -9566,7 +9689,7 @@ def periodo_datos(universo=None):
 
 	where, params = get_tenant_scope("Pieza", user, alcance)
 	if where == "1 = 0":
-		return {"mostrar": False, "universo": nombre}
+		return {"mostrar": False, "universo": nombre, "admin": es_admin}
 
 	llave = "molduplastic_ia:periodo_pieza:" + (",".join(sorted(str(p) for p in params)) or "TODAS")
 	cache = _cache_periodo()
@@ -9589,10 +9712,11 @@ def periodo_datos(universo=None):
 		}
 		cache.set_value(llave, datos, expires_in_sec=CACHE_PERIODO_DATOS)
 	if not datos.get("desde") and not datos.get("hasta"):
-		return {"mostrar": False, "universo": nombre}
+		return {"mostrar": False, "universo": nombre, "admin": es_admin}
 	return {
 		"mostrar": True,
 		"universo": nombre,
+		"admin": es_admin,
 		"desde": datos.get("desde") or "",
 		"hasta": datos.get("hasta") or "",
 		"desde_texto": _fecha_de_rango(datos.get("desde")),
@@ -9975,11 +10099,13 @@ def replicar_calificacion(nombre):
 		return {"ok": False, "mensaje": str(e)}
 	porcentajes = _porcentajes(spec, resultado) if _es_spec_efectividad(spec) else None
 	mostrar = _tabla_para_chat(spec, resultado, porcentajes) or {}
+	mostrar = _tabla_con_miles(mostrar) or {}
 	columnas = mostrar.get("columnas")
 	filas = mostrar.get("filas")
 	if not columnas:
 		columnas = [_titulo_columna(c) for c in (resultado.get("columnas") or [])]
 		filas = _formatear_dinero(spec, resultado, resultado.get("filas") or [])
+		filas = _tabla_con_miles({"columnas": columnas, "filas": filas})["filas"]
 	filas = json.loads(json.dumps(filas or [], ensure_ascii=False, default=str))
 	# La respuesta que se mostró en el chat (snapshot) sirve para comparar: la
 	# consulta devuelve las filas completas, no el top ni los filtros que aplicó

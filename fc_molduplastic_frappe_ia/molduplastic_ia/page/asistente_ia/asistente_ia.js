@@ -31,7 +31,13 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		cargando: false,
 		ultimo: null,
 		universo: null,
+		// Un admin elige universo antes de consultar; el chat lo pide en el
+		// primer envío (sin arrancar el loader ni "Analizando la pregunta…").
+		admin: false,
+		requiere_universo: false,
+		universo_pedido: false,
 		pendiente: null,
+		pendiente_mostrada: false,
 		periodo: null,
 		periodo_consulta: periodoGuardado.clave,
 		periodo_desde: periodoGuardado.desde,
@@ -729,8 +735,8 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 
 	function renderAsistente(m) {
 		// Con más de una fila, la tabla del servidor se pinta siempre: si el
-		// modelo escribió una tabla más corta o con menos columnas (p. ej. sin
-		// el "Intervalo 95%"), se completa con la del resultado.
+		// modelo escribió una tabla más corta o con menos columnas, se completa
+		// con la del resultado.
 		const filasServidor = ((m.tabla && m.tabla.filas) || []).length;
 		const columnasServidor = ((m.tabla && m.tabla.columnas) || []).length;
 		const tablaTextoCompleta =
@@ -783,6 +789,10 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 
 	function setUniverso(u, nombre) {
 		state.universo = u || null;
+		if (u) state.universo_pedido = false;
+		// Sin universo elegido un administrador todavía no puede consultar: el
+		// chat pide la aseguradora antes de arrancar la consulta.
+		state.requiere_universo = !!state.admin && !state.universo;
 		if (u) {
 			page.body.find("#ia-universo-bar").show();
 			page.body.find("#ia-universo-txt").text("Universo: " + (nombre || u));
@@ -798,6 +808,10 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 	// Rango de información del alcance (creación más antigua y última
 	// actualización de las piezas). Va en la parte superior del chat.
 	function pintarPeriodo(p) {
+		// El servidor dice si es administrador: con un admin sin universo el chat
+		// pide la aseguradora antes de consultar (dueño, 2026-11-27).
+		if (p && p.admin !== undefined) state.admin = !!p.admin;
+		state.requiere_universo = !!state.admin && !state.universo;
 		state.periodo = p && p.mostrar ? p : null;
 		const $bar = page.body.find("#ia-periodo-bar");
 		if (!state.periodo || state.vista !== "chat") {
@@ -904,8 +918,12 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		actualizarControlesPeriodo();
 	}
 
-	function pedirUniverso(aseguradoras, pendiente) {
+	function pedirUniverso(aseguradoras, pendiente, yaMostrada) {
 		state.pendiente = pendiente || null;
+		// Hay un selector en pantalla: una pregunta nueva lo reutiliza.
+		state.universo_pedido = true;
+		// La pregunta ya está en el chat: al elegir universo no se repite.
+		state.pendiente_mostrada = !!yaMostrada;
 		const div = addMsg("asistente", "¿Sobre qué aseguradora quieres consultar?");
 		const acts = $("<div>").addClass("ia-actions").appendTo(div);
 		$("<button>").addClass("btn btn-primary btn-xs").text("Todas")
@@ -922,8 +940,10 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		addMsg("sistema", "Universo: " + (valor === "TODAS" ? "Todas las aseguradoras" : (nombre || valor)));
 		if (state.pendiente) {
 			const q = state.pendiente;
+			const yaMostrada = state.pendiente_mostrada;
 			state.pendiente = null;
-			enviarPregunta(q);
+			state.pendiente_mostrada = false;
+			enviarPregunta(q, null, { ya_mostrada: yaMostrada });
 		}
 	}
 
@@ -1022,6 +1042,8 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 						comentario: m.comentario || "",
 						sugerencias_id: m.sugerencias_id || "",
 						sugerencias_modo: m.sugerencias_modo || "",
+						// Alcance con el que se consultó el turno (lo usa el reporte).
+						alcance_turno: m.alcance_id !== undefined ? m.alcance_id : null,
 					};
 					try {
 						if (m.datos_json) {
@@ -1055,10 +1077,11 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		enviarPregunta(q);
 	}
 
-	function enviarPregunta(q, meta) {
+	function enviarPregunta(q, meta, opciones) {
 		q = String(q || "").trim();
 		if (!q || state.cargando) return;
 		const sugerencia = meta || {};
+		const opts = opciones || {};
 		// Personalizado necesita las dos fechas: sin ellas el servidor caería al
 		// default y la pregunta se contestaría sobre otro período.
 		if (state.periodos.length && state.periodo_consulta === "personalizado") {
@@ -1071,9 +1094,26 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 				return;
 			}
 		}
-		mensajes.push({ rol: "usuario" });
+		if (!opts.ya_mostrada) {
+			mensajes.push({ rol: "usuario" });
+			addMsg("usuario", q);
+		}
 		actualizarSugerencias();
-		addMsg("usuario", q);
+		// Un administrador sin universo elegido todavía no puede consultar:
+		// primero se pregunta la aseguradora. Antes arrancaba el loader con
+		// "Analizando la pregunta…" sin nada que analizar (dueño, 2026-11-27).
+		if (state.requiere_universo && !state.universo) {
+			if (state.universo_pedido) {
+				// El selector ya está en pantalla: manda la pregunta más reciente.
+				state.pendiente = q;
+				state.pendiente_mostrada = true;
+				return;
+			}
+			frappe.call(API + ".universos").then((r) =>
+				pedirUniverso(r.message, q, true)
+			);
+			return;
+		}
 		// Etapa en la que va la pregunta. El servidor la guarda en caché y este
 		// bloque la consulta cada segundo: es informativa, si falla no pasa nada.
 		const progreso = $("<div>").addClass("ia-progreso").text("Analizando la pregunta…");
@@ -1118,7 +1158,8 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			}
 			if (m.pregunta_universo) {
 				state.conv = m.conversacion || state.conv;
-				pedirUniverso(m.aseguradoras, m.pregunta_pendiente);
+				// La pregunta ya se pintó en este envío: no se repite al elegir.
+				pedirUniverso(m.aseguradoras, m.pregunta_pendiente, true);
 				return;
 			}
 			state.conv = m.conversacion;
@@ -1133,6 +1174,9 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 				// Trazabilidad del set ofrecido: el chip lo devuelve al preguntar.
 				sugerencias_id: m.sugerencias_id || "",
 				sugerencias_modo: m.sugerencias_modo || "",
+				// Alcance real de los datos del turno: con un administrador puede
+				// ser otra aseguradora que la del selector (que no cambia).
+				alcance_turno: m.alcance_turno !== undefined ? m.alcance_turno : null,
 			};
 			if (m.columnas) {
 				msg.tabla = { columnas: m.columnas, filas: m.filas };
@@ -1229,7 +1273,11 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 			grafico: carga,
 			cobertura: m.cobertura || null,
 			universo: (m.cobertura && m.cobertura.universo) || 0,
-			alcance: state.universo || "",
+			// El alcance del turno manda: un admin puede haber preguntado por
+			// otra aseguradora sin mover el selector del chat.
+			alcance: m.alcance_turno !== null && m.alcance_turno !== undefined
+				? m.alcance_turno
+				: (state.universo || ""),
 			conversacion: state.conv,
 			tipo: grafico ? "Gráfico" : "Tabla",
 		}).then((r) => {
@@ -1310,6 +1358,8 @@ frappe.pages["asistente-ia"].on_page_load = function (wrapper) {
 		state.conv = null;
 		setUniverso(null);
 		state.pendiente = null;
+		state.pendiente_mostrada = false;
+		state.universo_pedido = false;
 		$msgs.empty();
 		mensajes.length = 0;
 		setVista("chat");
