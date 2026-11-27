@@ -68,7 +68,8 @@ La gramática de `filters` vive en dos lugares que deben coincidir: el bloque de
 
 ## Lecciones del entorno (no revertir)
 
-- `bench migrate` ejecuta `remove_orphan_doctypes`: si un controlador no importa (dependencia faltante, clase mal nombrada), **borra el registro DocType y sus archivos**. Verificar siempre tras migrar.
+- `bench migrate` ejecuta `remove_orphan_doctypes`: si un controlador no importa (dependencia faltante, clase mal nombrada), **borra el registro DocType y sus archivos**. Verificar siempre tras migrar con `SELECT COUNT(*) FROM tabDocType WHERE module='Fc Molduplastic Frappe App'` (20). Si el chat dice `DocType Pieza not found`, es esto.
+- **Hooks de migrate (2026-11-27).** `instalacion.verificar_dependencias_hermana` (`before_migrate`) corta el migrate si `fc_molduplastic_frappe_app.utils` no importa (faltan `thefuzz`/`unidecode`) para que `remove_orphan_doctypes` no borre `Pieza`/`Carga Archivo`; `instalacion.restaurar_doctypes_hermana` (`after_migrate`, corre **después** del borrado) reimporta los DocTypes que falten y asegura los 12 índices de `tabPieza`. Al recrear `Pieza`, `updatedb` borra `idx_ia_parte` e `idx_ia_tipo` (índices de una sola columna sobre campos sin `search_index`), por eso el hook los vuelve a crear; `INDICES_IA` debe coincidir con `scripts/indices_ia.sql` (test `test_los_indices_coinciden_con_el_sql`). Ojo: `frappe.db.table_exists` recibe el **DocType** (`"Pieza"`), no la tabla (`"tabPieza"` busca `tabtabPieza` y da False). Tests: `tests/test_instalacion.py`.
 - Deps instaladas al env por este motivo: `thefuzz==0.22.1`, `unidecode==1.3.8` (estaban en requirements de la app hermana pero no instaladas) y `setuptools==80.9.0` (el dropbox SDK 11.36 necesita `pkg_resources`).
 - `allow_tests` activado en el site (`bench set-config allow_tests true`).
 - pre-commit/ruff no están instalados en este entorno: estilo a mano (tabs, comillas dobles, línea 110).

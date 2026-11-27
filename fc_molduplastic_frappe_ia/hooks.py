@@ -88,6 +88,17 @@ required_apps = ["fc_molduplastic_frappe_app"]
 # before_install = "fc_molduplastic_frappe_ia.install.before_install"
 # after_install = "fc_molduplastic_frappe_ia.install.after_install"
 
+# Integridad de los DocTypes de la app hermana (2026-11-27). `remove_orphan_doctypes`
+# borra Pieza/Carga Archivo al final del migrate si su controlador no importa
+# (faltan thefuzz/unidecode en el env). El before_migrate corta antes del borrado;
+# el after_migrate corre después y restaura los que ya se habían perdido.
+before_migrate = [
+	"fc_molduplastic_frappe_ia.molduplastic_ia.instalacion.verificar_dependencias_hermana"
+]
+after_migrate = [
+	"fc_molduplastic_frappe_ia.molduplastic_ia.instalacion.restaurar_doctypes_hermana"
+]
+
 # Uninstallation
 # ------------
 

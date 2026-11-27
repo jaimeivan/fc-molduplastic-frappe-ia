@@ -44,6 +44,16 @@ importa: migrar, índices, configuración, caché y reinicio.
   Las dos deben dar 1 o más. En el repo de la app hermana eso vive en la rama
   **`excel-files`** (commit `ad9a685` o posterior); `develop` **no** los tiene y
   sin ellos cualquier consulta de Pieza falla con `Unknown column`.
+- Confirma las dependencias de la app hermana **en el env de ese servidor**:
+  ```bash
+  cd /home/frappe/frappe-bench
+  ./env/bin/python -c "import thefuzz, unidecode; print('deps ok')" \
+    || ./env/bin/pip install -r apps/fc_molduplastic_frappe_app/requirements.txt
+  ```
+  Si faltan, `remove_orphan_doctypes` (el último paso de `bench migrate`) borra el
+  registro de `Pieza` y `Carga Archivo` porque su controlador no importa. Desde
+  esta versión `bench migrate` **aborta antes** con un mensaje claro, pero la
+  solución es instalar las dependencias.
 - Espacio y motor: deja **≥ 4 GB libres** (los índices de `tabPieza` quedan en
   ~3.3 GB), MariaDB 10.11 y `innodb_buffer_pool_size=1G`.
 
@@ -81,10 +91,27 @@ y 100`, es exactamente eso: un Single viejo con `objetivo_efectividad` en 0. Est
 versión lo corrige; vuelve a ejecutar `bench --site <site> migrate` y retoma desde
 el parche que falló.
 
-#### 3. Índices de `tabPieza` (obligatorio)
+Los hooks `before_migrate`/`after_migrate` de la app protegen los DocTypes de la
+app hermana: si su controlador no importa (faltan `thefuzz`/`unidecode`), el
+migrate se corta con un mensaje accionable **antes** de que
+`remove_orphan_doctypes` borre `Pieza`; si ya se había borrado (el chat dice
+`DocType Pieza not found`), el `after_migrate` lo reimporta desde el JSON y
+vuelve a crear los índices analíticos que falten. La tabla y los datos de
+`tabPieza` no se tocan en ningún caso.
 
-`bench migrate` **no** los crea. Sin ellos el executor falla con
-`ERROR 1176: Key 'idx_ia_…' doesn't exist` y el chat muestra "Error de conexión":
+#### 3. Índices de `tabPieza`
+
+El `after_migrate` crea los índices que falten, así que un `migrate` normal deja
+los 12 puestos. El script es la vía explícita para una base nueva, para
+verificarlos o para correrlos a mano si se prefiere no esperar al hook:
+
+```bash
+cd /home/frappe/frappe-bench
+bench --site <site> mariadb < apps/fc_molduplastic_frappe_ia/scripts/indices_ia.sql
+```
+
+Sin ellos el executor falla con `ERROR 1176: Key 'idx_ia_…' doesn't exist` y el
+chat muestra "Error de conexión".
 
 ```bash
 cd /home/frappe/frappe-bench
@@ -195,10 +222,12 @@ Notas:
 
 El asistente mide lo mismo que los tableros de BI (`VW_PIEZAS` / `vwPiezas`): el período de Pieza es **`fecha_hora_carga`** (fecha del lote de carga) y el universo es **`recolectable = 1 AND rutas_validas = '1'`**. La reconciliación es exacta: `SELECT COUNT(*) FROM vwPiezas WHERE Aseguradora = 'GNP' AND FechaIngreso BETWEEN …` debe coincidir con "piezas ingresadas" del asistente para ese mes.
 
-Los índices de `tabPieza` se crean **fuera de `migrate`** y hay que recrearlos si se
-reinstala la BD. El script es `scripts/indices_ia.sql` (crea los 12, es
-re-ejecutable y termina verificándolos); los detalles de cada índice están en
-`AGENTS.md` (sección "Rendimiento: índices de tabPieza").
+Los índices de `tabPieza` **no** son `search_index` de un DocType: el script
+`scripts/indices_ia.sql` los crea y el hook `after_migrate` de la app asegura los
+que falten en cada `migrate` (al recrear `Pieza`, `updatedb` borra los de una sola
+columna, `idx_ia_parte` e `idx_ia_tipo`, y el hook los vuelve a crear). Los
+detalles de cada índice están en `AGENTS.md` (sección "Rendimiento: índices de
+tabPieza").
 
 Tuning recomendado del host de BD (2 GB de RAM); en este host ya está aplicado:
 
